@@ -1,0 +1,8 @@
+{
+  "version": "v1.14.2",
+  "archive_sha256": "925c5382eca8492b0150f868a6db20b18290a38700e621724b3703fd453e032d",
+  "binary_sha256": "d652879eed7e38b866fa980bc2e119dcdb13968fe5e6583670293a258686d0e7",
+  "source": "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-darwin-arm64.tar.gz",
+  "platform": "darwin-arm64",
+  "verified_against_github_digest": true
+}

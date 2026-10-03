@@ -1,0 +1,11 @@
+node_modules/
+dist/
+target/
+*.log
+.DS_Store
+core/sing-box
+core/sing-box.exe
+apps/desktop/src-tauri/gen/
+.env
+.env.*
+*.enc

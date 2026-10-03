@@ -1,0 +1,16 @@
+[package]
+name = "smart-vpn-desktop"
+version = "0.1.1"
+edition = "2021"
+license = "GPL-3.0-only"
+[build-dependencies]
+tauri-build = {version="2",features= [] }
+[dependencies]
+tauri = {version="2",features= ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+smart-vpn-engine = {path="../../.."}
+serde = {version="1",features= ["derive"] }
+serde_json = "1"
+uuid = {version="1",features= ["v4"] }

@@ -1,0 +1,22 @@
+import React from 'react';
+import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
+import {render,screen,fireEvent,waitFor,cleanup} from '@testing-library/react';
+const ipc=vi.hoisted(()=>({invoke:vi.fn(),listen:vi.fn(async()=>()=>{}),enabled:vi.fn(async()=>false)}));
+vi.mock('@tauri-apps/api/core',()=>({invoke:ipc.invoke}));
+vi.mock('@tauri-apps/api/event',()=>({listen:ipc.listen}));
+vi.mock('@tauri-apps/plugin-autostart',()=>({isEnabled:ipc.enabled,enable:vi.fn(),disable:vi.fn()}));
+vi.mock('@tauri-apps/plugin-clipboard-manager',()=>({readText:vi.fn(),writeText:vi.fn()}));
+vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
+import {App} from '../src/App';
+import type {Snapshot} from '../src/types';
+let snapshot:Snapshot;
+function fixture():Snapshot{return{status:'disconnected',proxy_port:null,core_version:'1.14.2',connection_plan:'needs_proxy_consent',logs:[],profile:{version:1,selected:'test',subscriptions:[],rules:[],servers:[{id:'test',name:'Тестовый сервер',address:'example.com',port:443,uuid:'public-test-fixture',transport:'tcp',security:'tls',params:{},favorite:false,group:'Основные',subscription:null,latency_ms:88,download_mbps:16.4,status:'available',successes:1,failures:0,last_error:null}],settings:{mode:'smart',tun:true,kill_switch:true,proxy_acknowledged:false,dns_protection:true,dns_provider:'cloudflare',dns_transport:'https',auto_connect:false,start_minimized:false,restore:true,health_interval:30,failover:true,favorites_only:false,strategy:'balanced',subscription_interval:21600}}}}
+beforeEach(()=>{snapshot=fixture();ipc.invoke.mockReset();ipc.invoke.mockImplementation(async(command:string)=>{if(command==='snapshot')return structuredClone(snapshot);if(command==='prepare_proxy'){snapshot.profile.settings.tun=false;snapshot.profile.settings.kill_switch=false;snapshot.profile.settings.proxy_acknowledged=true;snapshot.connection_plan='ready';return;}if(command==='connect'){snapshot.status='connected';snapshot.proxy_port=2080;return 2080;}throw new Error('Unexpected command '+command);});});
+afterEach(cleanup);
+async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
+describe('connection setup regression',()=>{
+ it('opens an explanation instead of sending the failing connect command',async()=>{await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));expect(screen.getByRole('dialog')).toBeTruthy();expect(screen.getByText(/Защиты при обрыве VPN нет/)).toBeTruthy();expect(ipc.invoke.mock.calls.some(([command])=>command==='connect'||command==='prepare_proxy')).toBe(false);});
+ it('cancel keeps the existing protection settings and server intact',async()=>{await ready();const before=structuredClone(snapshot);fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Отмена',exact:true}));expect(screen.queryByRole('dialog')).toBeNull();expect(snapshot).toEqual(before);expect(ipc.invoke.mock.calls.some(([command])=>command==='prepare_proxy')).toBe(false);});
+ it('explicit proxy selection prepares settings before connecting',async()=>{await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Подключить локальный прокси',exact:true}));await waitFor(()=>expect(ipc.invoke.mock.calls.some(([command])=>command==='connect')).toBe(true));const changes=ipc.invoke.mock.calls.filter(([command])=>command==='prepare_proxy'||command==='connect');expect(changes.map(([command])=>command)).toEqual(['prepare_proxy','connect']);expect(changes[0][1]).toEqual({expectedSelected:'test'});await screen.findByText('127.0.0.1:2080');});
+ it('unsupported features are visibly unavailable rather than active switches',async()=>{await ready();fireEvent.click(screen.getAllByRole('button',{name:'Настройки',exact:true})[0]);expect(screen.getAllByText('Пока недоступно')).toHaveLength(2);expect(screen.queryByRole('checkbox',{name:/Блокировать защищаемый/})).toBeNull();});
+});

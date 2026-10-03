@@ -1,0 +1,1 @@
+{"identifier":"default","description":"Локальное окно Smart VPN Router","windows":["main"],"permissions":["core:default","autostart:default","clipboard-manager:allow-read-text","clipboard-manager:allow-write-text","dialog:allow-open","dialog:allow-save"]}

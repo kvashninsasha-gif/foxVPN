@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "resources": {
+      "../../../core/sing-box": "core/sing-box.exe",
+      "../../../core/version.json": "core/version.json"
+    },
+    "targets": [
+      "nsis"
+    ]
+  }
+}
