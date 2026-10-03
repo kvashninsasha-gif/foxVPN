@@ -640,7 +640,7 @@ fn main() {
             let menu = Menu::with_items(app, &[&show, &connect, &stop, &tests, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .tooltip("Smart VPN Router")
+                .tooltip("foxVPN")
                 .on_menu_event(|app, e| {
                     let state = app.state::<State>().inner().clone();
                     match e.id.as_ref() {
@@ -721,7 +721,7 @@ fn main() {
             let exit = MenuItem::with_id(app, "exit-app", t("exit"), true, Some("CmdOrCtrl+Q"))?;
             let open = MenuItem::with_id(app, "show-app", t("open_app"), true, None::<&str>)?;
             let app_menu =
-                Submenu::with_items(app, "Smart VPN Router", true, &[&open, &close, &exit])?;
+                Submenu::with_items(app, "foxVPN", true, &[&open, &close, &exit])?;
             app.set_menu(Menu::with_items(app, &[&app_menu])?)?;
             if profile.settings.start_minimized
                 && !(profile.settings.auto_connect

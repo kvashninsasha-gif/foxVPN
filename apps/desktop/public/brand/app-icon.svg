@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs><linearGradient id="background" x1="160" y1="80" x2="864" y2="944" gradientUnits="userSpaceOnUse"><stop stop-color="#243C59"/><stop offset="1" stop-color="#102138"/></linearGradient></defs>
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#background)"/>
+  <rect x="65.5" y="65.5" width="893" height="893" rx="202.5" stroke="#FFFFFF" stroke-opacity=".12" stroke-width="3"/>
+  <g transform="translate(141 141) scale(2.9)">
+  <path d="M128 20C153 34 181 44 208 50V114C208 167 175 203 128 232C81 203 48 167 48 114V50C75 44 103 34 128 20Z" fill="#FFF4E7"/>
+  <path d="M73 66L111 92C122 88 134 88 145 92L183 66L176 137C168 157 151 174 128 190C105 174 88 157 80 137L73 66Z" fill="#F18436"/>
+  <path d="M83 85L104 103L87 112L83 85ZM173 85L152 103L169 112L173 85Z" fill="#172A43"/>
+  <path d="M84 126C100 120 114 133 128 149C142 133 156 120 172 126C168 149 149 174 128 186C107 174 88 149 84 126Z" fill="#FFF4E7"/>
+  <path d="M92 123L112 133L105 138L94 132L92 123ZM164 123L144 133L151 138L162 132L164 123Z" fill="#172A43"/>
+  <path d="M118 154Q128 150 138 154L128 166L118 154Z" fill="#172A43"/>
+</g>
+</svg>

@@ -38,7 +38,7 @@ jobs:
         working-directory: apps/desktop
       - uses: actions/upload-artifact@v4
         with:
-          name: SmartVPN-${{ matrix.platform }}-unsigned
+          name: foxVPN-${{ matrix.platform }}-unsigned
           path: |
             target/release/bundle/macos/*.app
             target/release/bundle/dmg/*.dmg
