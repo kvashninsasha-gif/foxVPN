@@ -70,8 +70,8 @@ pub fn config(
         "vpn"
     };
     let mut route = vec![
-        json!({"protocol":"dns","action":"hijack-dns"}),
         json!({"action":"sniff"}),
+        json!({"protocol":"dns","action":"hijack-dns"}),
     ];
     // Infrastructure only: private IP bypass is intentionally absent (could override user rules).
     let mut dns_rules = vec![];
@@ -173,6 +173,26 @@ impl CoreProcess {
         rules: &[Rule],
         port: u16,
     ) -> Result<Self, String> {
+        Self::start_internal(binary, s, settings, rules, port, None)
+    }
+    pub fn start_for_uid(
+        binary: &Path,
+        s: &Server,
+        settings: &Settings,
+        rules: &[Rule],
+        port: u16,
+        uid: u32,
+    ) -> Result<Self, String> {
+        Self::start_internal(binary, s, settings, rules, port, Some(uid))
+    }
+    fn start_internal(
+        binary: &Path,
+        s: &Server,
+        settings: &Settings,
+        rules: &[Rule],
+        port: u16,
+        uid: Option<u32>,
+    ) -> Result<Self, String> {
         if settings.kill_switch {
             return Err(crate::text("message_274").into());
         }
@@ -188,7 +208,11 @@ impl CoreProcess {
             api_port = free_port()?
         }
         let secret = Uuid::new_v4().to_string();
-        let cfg = config(s, settings, rules, port, api_port, &secret)?;
+        let mut cfg = config(s, settings, rules, port, api_port, &secret)?;
+        if uid.is_some() {
+            cfg["inbounds"][1]["interface_name"] = json!("utun99");
+            cfg["inbounds"][1]["dns_mode"] = json!("disabled");
+        }
         let dir = std::env::temp_dir().join(format!("smartvpn-{}", Uuid::new_v4()));
         std::fs::create_dir(&dir).map_err(|_| crate::text("message_276"))?;
         #[cfg(unix)]
@@ -224,7 +248,11 @@ impl CoreProcess {
             return Err(friendly_error(&String::from_utf8_lossy(&valid.stderr)));
         }
         drop(reservation);
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        if let Some(uid) = uid {
+            command.env("FOXVPN_CORE_UID", uid.to_string());
+        }
+        let mut child = command
             .args(["run", "-c"])
             .arg(&path)
             .stdin(Stdio::null())
@@ -307,6 +335,18 @@ impl CoreProcess {
         matches!(self.child.try_wait(), Ok(None))
     }
     pub fn stop(&mut self) {
+        #[cfg(unix)]
+        if matches!(self.child.try_wait(), Ok(None)) {
+            unsafe {
+                libc::kill(self.child.id() as i32, libc::SIGTERM);
+            }
+            for _ in 0..40 {
+                if !matches!(self.child.try_wait(), Ok(None)) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);

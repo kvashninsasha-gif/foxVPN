@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "../../../core/foxvpn-helper": "network/foxvpn-helper",
+      "../../../core/foxvpn-network-core": "network/foxvpn-network-core",
+      "../../../core/network-version.json": "network/network-version.json"
+    }
+  }
+}

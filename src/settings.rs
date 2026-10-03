@@ -367,6 +367,15 @@ pub fn connection_plan(profile: &Profile) -> ConnectionPlan {
     }
     ConnectionPlan::Ready
 }
+/// The installed, authenticated helper supplies the protected TUN capability.
+pub fn connection_plan_with_helper(profile: &Profile, helper_available: bool) -> ConnectionPlan {
+    let plan = connection_plan(profile);
+    if plan != ConnectionPlan::NeedsServer && profile.settings.tun && helper_available {
+        ConnectionPlan::Ready
+    } else {
+        plan
+    }
+}
 pub fn prepare_proxy(profile: &Profile, expected_selected: &str) -> Result<Profile, String> {
     if profile.selected.as_deref() != Some(expected_selected)
         || !profile

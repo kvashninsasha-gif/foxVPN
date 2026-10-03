@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+for path in /Library/PrivilegedHelperTools/foxVPN /Library/PrivilegedHelperTools/ru.smartvpn.router.network /Library/LaunchDaemons/ru.smartvpn.router.network.plist /Library/Logs/foxVPN-network.log; do
+ if [ -L "$path" ]; then echo 'foxVPN: refusing a symbolic link in the install destination' >&2; exit 1; fi
+ if [ -e "$path" ] && [ "$(/usr/bin/stat -f %u "$path")" != 0 ]; then echo 'foxVPN: install destination is not root-owned' >&2; exit 1; fi
+done
+/bin/launchctl bootout system/ru.smartvpn.router.network 2>/dev/null || true
+exit 0

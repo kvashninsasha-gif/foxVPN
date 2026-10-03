@@ -17,11 +17,47 @@ use tauri::{
     tray::TrayIconBuilder,
     Emitter, Manager,
 };
+struct ActiveCore {
+    local: Option<CoreProcess>,
+    proxy_port: u16,
+    api_port: u16,
+    secret: String,
+    logs: Arc<Mutex<Vec<String>>>,
+}
+impl ActiveCore {
+    fn local(core: CoreProcess) -> Self {
+        Self {
+            proxy_port: core.proxy_port,
+            api_port: core.api_port,
+            secret: core.secret.clone(),
+            logs: core.logs.clone(),
+            local: Some(core),
+        }
+    }
+    fn remote(status: smart_vpn_engine::network_helper::Status) -> Self {
+        Self {
+            local: None,
+            proxy_port: status.proxy_port,
+            api_port: status.api_port,
+            secret: status.secret,
+            logs: Arc::new(Mutex::new(vec![])),
+        }
+    }
+    fn alive(&mut self) -> bool {
+        match &mut self.local {
+            Some(core) => core.alive(),
+            None => smart_vpn_engine::network_helper::request(
+                &smart_vpn_engine::network_helper::Request::Status,
+            )
+            .is_ok_and(|r| r.status.wanted),
+        }
+    }
+}
 #[derive(Clone)]
 struct State {
     profile: Arc<Mutex<Profile>>,
     vault: Arc<Vault>,
-    core: Arc<Mutex<Option<CoreProcess>>>,
+    core: Arc<Mutex<Option<ActiveCore>>>,
     binary: PathBuf,
     status: Arc<Mutex<String>>,
     gate: Arc<Mutex<()>>,
@@ -35,6 +71,7 @@ struct Snapshot {
     core_version: String,
     connection_plan: ConnectionPlan,
     logs: Vec<String>,
+    helper_available: bool,
 }
 fn edit<T>(s: &State, f: impl FnOnce(&mut Profile) -> Result<T, String>) -> Result<T, String> {
     let _operation = s
@@ -63,13 +100,21 @@ fn snapshot(s: tauri::State<State>) -> Snapshot {
         )
     };
     let profile = s.profile.lock().unwrap().clone();
+    let helper_available = smart_vpn_engine::network_helper::request(
+        &smart_vpn_engine::network_helper::Request::Status,
+    )
+    .is_ok();
     Snapshot {
-        connection_plan: connection_plan(&profile),
+        connection_plan: smart_vpn_engine::settings::connection_plan_with_helper(
+            &profile,
+            helper_available,
+        ),
         profile,
         status: s.status.lock().unwrap().clone(),
         proxy_port,
         core_version: "1.14.2".into(),
         logs,
+        helper_available,
     }
 }
 #[derive(Serialize)]
@@ -77,19 +122,76 @@ struct RuntimeSnapshot {
     status: String,
     proxy_port: Option<u16>,
     logs: Option<Vec<String>>,
+    connection_error: Option<String>,
 }
 #[tauri::command]
-fn runtime(include_logs: bool, s: tauri::State<State>) -> RuntimeSnapshot {
-    let core = s.core.lock().unwrap();
-    RuntimeSnapshot {
-        status: s.status.lock().unwrap().clone(),
-        proxy_port: core.as_ref().map(|c| c.proxy_port),
-        logs: include_logs.then(|| {
-            core.as_ref()
-                .map(|c| c.logs.lock().unwrap().clone())
-                .unwrap_or_default()
-        }),
-    }
+async fn runtime(
+    include_logs: bool,
+    s: tauri::State<'_, State>,
+) -> Result<RuntimeSnapshot, String> {
+    let s = s.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let tun = s.profile.lock().unwrap().settings.tun;
+        let mut core = s.core.lock().unwrap();
+        let mut connection_error = None;
+        if tun || core.as_ref().is_some_and(|c| c.local.is_none()) {
+            match smart_vpn_engine::network_helper::request(
+                &smart_vpn_engine::network_helper::Request::Status,
+            ) {
+                Ok(response) => {
+                    connection_error = response.status.error.clone();
+                    *s.status.lock().unwrap() = if response.status.running {
+                        "connected"
+                    } else if response.status.wanted || response.status.kill_switch {
+                        "reconnecting"
+                    } else {
+                        "disconnected"
+                    }
+                    .into();
+                    if response.status.running {
+                        if let Some(core) = core.as_mut() {
+                            core.proxy_port = response.status.proxy_port;
+                            core.api_port = response.status.api_port;
+                            core.secret = response.status.secret;
+                        } else {
+                            *core = Some(ActiveCore::remote(response.status));
+                        }
+                    }
+                }
+                Err(error) => {
+                    connection_error = Some(error);
+                    *s.status.lock().unwrap() =
+                        if s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
+                            "reconnecting"
+                        } else {
+                            "disconnected"
+                        }
+                        .into();
+                }
+            }
+            if include_logs {
+                if let Ok(response) = smart_vpn_engine::network_helper::request(
+                    &smart_vpn_engine::network_helper::Request::Logs,
+                ) {
+                    if let Some(c) = core.as_ref() {
+                        *c.logs.lock().unwrap() = response.logs;
+                    }
+                }
+            }
+        }
+        RuntimeSnapshot {
+            status: s.status.lock().unwrap().clone(),
+            proxy_port: core.as_ref().map(|c| c.proxy_port),
+            logs: include_logs.then(|| {
+                core.as_ref()
+                    .map(|c| c.logs.lock().unwrap().clone())
+                    .unwrap_or_default()
+            }),
+            connection_error,
+        }
+    })
+    .await
+    .map_err(|_| smart_vpn_engine::text("helper_ipc").into())
 }
 #[tauri::command]
 fn import_servers(text: String, s: tauri::State<State>) -> Result<ImportReport, String> {
@@ -213,10 +315,26 @@ fn check_route(domain: String, s: tauri::State<State>) -> Result<routing::Decisi
     let p = s.profile.lock().unwrap();
     routing::decide(&domain, &p.settings.mode, &p.rules)
 }
-fn disconnect(s: &State) {
+fn disconnect(s: &State) -> Result<(), String> {
     s.wanted.store(false, std::sync::atomic::Ordering::SeqCst);
-    stop_core(s)
+    let tun = s.profile.lock().unwrap().settings.tun;
+    let active_remote = s
+        .core
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|c| c.local.is_none())
+        || (tun && s.status.lock().unwrap().as_str() != "disconnected");
+    stop_core(s);
+    match smart_vpn_engine::network_helper::request(
+        &smart_vpn_engine::network_helper::Request::Stop,
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) if active_remote => Err(error),
+        Err(_) => Ok(()),
+    }
 }
+
 fn stop_core(s: &State) {
     let _guard = s.gate.lock().unwrap();
     *s.core.lock().unwrap() = None;
@@ -237,7 +355,7 @@ fn connect_impl(s: &State) -> Result<u16, String> {
         *core = None;
     }
     let p = s.profile.lock().unwrap().clone();
-    if connection_plan(&p) == ConnectionPlan::NeedsProxyConsent {
+    if !p.settings.tun && connection_plan(&p) == ConnectionPlan::NeedsProxyConsent {
         return Err(smart_vpn_engine::text("proxy_setup_needed").into());
     }
     let server = p
@@ -247,13 +365,26 @@ fn connect_impl(s: &State) -> Result<u16, String> {
         .ok_or(smart_vpn_engine::text("message_320"))?;
     *s.status.lock().unwrap() = "connecting".into();
     let result = (|| {
-        let core = CoreProcess::start_on_port(
-            &s.binary,
-            server,
-            &p.settings,
-            &p.rules,
-            p.settings.proxy_port,
-        )?;
+        let core = if p.settings.tun {
+            let response = smart_vpn_engine::network_helper::request(
+                &smart_vpn_engine::network_helper::Request::Start(Box::new(
+                    smart_vpn_engine::network_helper::StartRequest {
+                        server: server.clone(),
+                        settings: p.settings.clone(),
+                        rules: p.rules.clone(),
+                    },
+                )),
+            )?;
+            ActiveCore::remote(response.status)
+        } else {
+            ActiveCore::local(CoreProcess::start_on_port(
+                &s.binary,
+                server,
+                &p.settings,
+                &p.rules,
+                p.settings.proxy_port,
+            )?)
+        };
         let c = latency::client(core.proxy_port)?;
         c.get("https://www.gstatic.com/generate_204")
             .send()
@@ -261,6 +392,11 @@ fn connect_impl(s: &State) -> Result<u16, String> {
             .error_for_status()
             .map_err(|_| smart_vpn_engine::text("message_321"))?;
         if !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
+            if core.local.is_none() {
+                let _ = smart_vpn_engine::network_helper::request(
+                    &smart_vpn_engine::network_helper::Request::Stop,
+                );
+            }
             return Err(smart_vpn_engine::text("connection_cancelled").into());
         }
         let port = core.proxy_port;
@@ -282,6 +418,54 @@ fn prepare_proxy(expected_selected: String, s: tauri::State<State>) -> Result<()
             return Err(smart_vpn_engine::text("disconnect_first").into());
         }
         *profile = smart_vpn_engine::settings::prepare_proxy(profile, &expected_selected)?;
+        Ok(())
+    })
+}
+#[tauri::command]
+async fn install_network_helper(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let resources = app
+            .path()
+            .resource_dir()
+            .map_err(|_| smart_vpn_engine::text("helper_package"))?;
+        tauri::async_runtime::spawn_blocking(move || {
+            let package = smart_vpn_engine::network_helper::create_installer(&resources)?;
+            std::process::Command::new("/usr/bin/open")
+                .arg(package)
+                .status()
+                .map_err(|_| smart_vpn_engine::text("helper_package"))?;
+            Ok(())
+        })
+        .await
+        .map_err(|_| smart_vpn_engine::text("helper_package"))?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err(smart_vpn_engine::text("helper_macos_only").into())
+    }
+}
+#[tauri::command]
+async fn test_recovery() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        smart_vpn_engine::network_helper::request(
+            &smart_vpn_engine::network_helper::Request::TestRecovery,
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(|_| smart_vpn_engine::text("helper_ipc"))?
+}
+#[tauri::command]
+fn prepare_tun(s: tauri::State<State>) -> Result<(), String> {
+    smart_vpn_engine::network_helper::request(&smart_vpn_engine::network_helper::Request::Status)?;
+    edit(&s, |profile| {
+        if s.core.lock().unwrap().is_some() {
+            return Err(smart_vpn_engine::text("disconnect_first").into());
+        }
+        profile.settings.tun = true;
+        profile.settings.kill_switch = true;
         Ok(())
     })
 }
@@ -311,8 +495,7 @@ async fn stop(s: tauri::State<'_, State>) -> Result<(), String> {
         .store(false, std::sync::atomic::Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || disconnect(&state))
         .await
-        .map_err(|_| smart_vpn_engine::text("message_322"))?;
-    Ok(())
+        .map_err(|_| smart_vpn_engine::text("message_322"))?
 }
 fn test_impl(s: &State, id: &str, speed: bool) -> Result<latency::Measurement, String> {
     let server = s
@@ -631,6 +814,17 @@ fn main() {
                 gate: Arc::new(Mutex::new(())),
                 wanted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
+            if let Ok(response) = smart_vpn_engine::network_helper::request(
+                &smart_vpn_engine::network_helper::Request::Status,
+            ) {
+                if response.status.wanted && response.status.running {
+                    *state.core.lock().unwrap() = Some(ActiveCore::remote(response.status));
+                    *state.status.lock().unwrap() = "connected".into();
+                    state
+                        .wanted
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
             app.manage(state.clone());
             let show = MenuItem::with_id(app, "show", t("open_app"), true, None::<&str>)?;
             let connect = MenuItem::with_id(app, "connect", t("connect"), true, None::<&str>)?;
@@ -652,7 +846,9 @@ fn main() {
                         }
                         "connect" => {
                             let plan = connection_plan(&state.profile.lock().unwrap());
-                            if plan != ConnectionPlan::Ready {
+                            if plan != ConnectionPlan::Ready
+                                && !state.profile.lock().unwrap().settings.tun
+                            {
                                 if let Some(window) = app.get_webview_window("main") {
                                     let _ = window.show();
                                     let _ = window.set_focus();
@@ -683,7 +879,9 @@ fn main() {
                                 .store(false, std::sync::atomic::Ordering::SeqCst);
                             let handle = app.clone();
                             tauri::async_runtime::spawn_blocking(move || {
-                                disconnect(&state);
+                                if let Err(error) = disconnect(&state) {
+                                    let _ = handle.emit("operation-error", error);
+                                }
                                 let _ = handle.emit("servers-updated", ());
                             });
                         }
@@ -705,8 +903,11 @@ fn main() {
                             });
                         }
                         "quit" => {
-                            disconnect(&state);
-                            app.exit(0)
+                            if let Err(error) = disconnect(&state) {
+                                let _ = app.emit("operation-error", error);
+                            } else {
+                                app.exit(0)
+                            }
                         }
                         _ => (),
                     }
@@ -720,12 +921,17 @@ fn main() {
                 MenuItem::with_id(app, "hide", t("hide_window"), true, Some("CmdOrCtrl+W"))?;
             let exit = MenuItem::with_id(app, "exit-app", t("exit"), true, Some("CmdOrCtrl+Q"))?;
             let open = MenuItem::with_id(app, "show-app", t("open_app"), true, None::<&str>)?;
-            let app_menu =
-                Submenu::with_items(app, "foxVPN", true, &[&open, &close, &exit])?;
+            let app_menu = Submenu::with_items(app, "foxVPN", true, &[&open, &close, &exit])?;
             app.set_menu(Menu::with_items(app, &[&app_menu])?)?;
+            let startup_plan = smart_vpn_engine::settings::connection_plan_with_helper(
+                &profile,
+                smart_vpn_engine::network_helper::request(
+                    &smart_vpn_engine::network_helper::Request::Status,
+                )
+                .is_ok(),
+            );
             if profile.settings.start_minimized
-                && !(profile.settings.auto_connect
-                    && connection_plan(&profile) != ConnectionPlan::Ready)
+                && !(profile.settings.auto_connect && startup_plan != ConnectionPlan::Ready)
             {
                 if let Some(w) = app.get_webview_window("main") {
                     w.hide()?;
@@ -733,9 +939,7 @@ fn main() {
             }
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                if profile.settings.auto_connect
-                    && connection_plan(&profile) == ConnectionPlan::Ready
-                {
+                if profile.settings.auto_connect && startup_plan == ConnectionPlan::Ready {
                     state
                         .wanted
                         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -783,7 +987,12 @@ fn main() {
                             }
                             let _ = handle.emit("servers-updated", ());
                         }
-                        let endpoint = state.core.lock().unwrap().as_ref().map(|c| c.proxy_port);
+                        let endpoint = state
+                            .core
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .and_then(|c| c.local.as_ref().map(|_| c.proxy_port));
                         if let Some(port) = endpoint {
                             let ok = latency::client(port)
                                 .and_then(|c| {
@@ -831,7 +1040,8 @@ fn main() {
                                 }
                                 let _ = handle.emit("servers-updated", ());
                             }
-                        } else if settings.restore
+                        } else if state.core.lock().unwrap().is_none()
+                            && settings.restore
                             && state.wanted.load(std::sync::atomic::Ordering::SeqCst)
                         {
                             if let Err(e) = connect_impl(&state) {
@@ -869,8 +1079,11 @@ fn main() {
                 }
             }
             "exit-app" => {
-                disconnect(&app.state::<State>());
-                app.exit(0)
+                if let Err(error) = disconnect(&app.state::<State>()) {
+                    let _ = app.emit("operation-error", error);
+                } else {
+                    app.exit(0)
+                }
             }
             _ => (),
         })
@@ -883,6 +1096,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             runtime,
+            install_network_helper,
+            prepare_tun,
+            test_recovery,
             import_servers,
             select_server,
             delete_server,

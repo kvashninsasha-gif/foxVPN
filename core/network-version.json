@@ -1,0 +1,9 @@
+{
+  "version": "1.14.2-foxVPN.1",
+  "upstream_version": "1.14.2",
+  "binary_sha256": "0e7d4699622ba9159fc48c21d80f218a0f7f67f2d9f1fad5f327f54ffd00ae31",
+  "source_archive_sha256": "1b714405fab8d8897fca80ef6fde41529d10e1e91dd3a5df618c355d8bd75327",
+  "patch": "scripts/macos/privilege_drop.go + build-network-core.py",
+  "platform": "darwin-arm64",
+  "official_binary": false
+}

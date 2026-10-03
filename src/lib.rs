@@ -16,3 +16,5 @@ pub fn text(key: &str) -> &'static str {
         .map(String::as_str)
         .unwrap_or("Неизвестное сообщение")
 }
+
+pub mod network_helper;

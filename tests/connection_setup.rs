@@ -29,6 +29,28 @@ fn first_run_requests_server() {
     );
 }
 #[test]
+fn protected_startup_requires_both_selected_server_and_authenticated_helper() {
+    let profile = legacy_profile();
+    assert_eq!(
+        settings::connection_plan_with_helper(&profile, true),
+        ConnectionPlan::Ready
+    );
+    assert_eq!(
+        settings::connection_plan_with_helper(&profile, false),
+        ConnectionPlan::NeedsProxyConsent
+    );
+    assert_eq!(
+        settings::connection_plan_with_helper(&Profile::default(), true),
+        ConnectionPlan::NeedsServer
+    );
+    let mut local = profile;
+    local.settings.tun = false;
+    assert_eq!(
+        settings::connection_plan_with_helper(&local, true),
+        ConnectionPlan::NeedsProxyConsent
+    );
+}
+#[test]
 fn legacy_defaults_request_proxy_choice_without_changing_profile() {
     let p = legacy_profile();
     let before = serde_json::to_value(&p).unwrap();
