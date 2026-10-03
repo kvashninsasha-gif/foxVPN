@@ -162,6 +162,17 @@ impl CoreProcess {
         settings: &Settings,
         rules: &[Rule],
     ) -> Result<Self, String> {
+        Self::start_on_port(binary, s, settings, rules, free_port()?)
+    }
+    /// Interactive connections keep a stable port; isolated measurements use
+    /// `start` so they can run alongside the user's active proxy.
+    pub fn start_on_port(
+        binary: &Path,
+        s: &Server,
+        settings: &Settings,
+        rules: &[Rule],
+        port: u16,
+    ) -> Result<Self, String> {
         if settings.kill_switch {
             return Err(crate::text("message_274").into());
         }
@@ -169,7 +180,9 @@ impl CoreProcess {
         if settings.tun && unsafe { libc::geteuid() } != 0 {
             return Err(crate::text("message_275").into());
         }
-        let port = free_port()?;
+        // Fail clearly instead of mistaking another listener for our core.
+        let reservation = std::net::TcpListener::bind(("127.0.0.1", port))
+            .map_err(|_| crate::text("message_271"))?;
         let mut api_port = free_port()?;
         while api_port == port {
             api_port = free_port()?
@@ -210,6 +223,7 @@ impl CoreProcess {
             let _ = std::fs::remove_dir_all(&dir);
             return Err(friendly_error(&String::from_utf8_lossy(&valid.stderr)));
         }
+        drop(reservation);
         let mut child = Command::new(binary)
             .args(["run", "-c"])
             .arg(&path)

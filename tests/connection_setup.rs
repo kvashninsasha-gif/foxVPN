@@ -100,3 +100,29 @@ fn proxy_choice_survives_restart_settings_save_and_server_selection() {
     restored.validate().unwrap();
     assert_eq!(settings::connection_plan(&restored), ConnectionPlan::Ready);
 }
+
+#[test]
+fn legacy_profiles_get_stable_port_without_resetting_other_preferences() {
+    let mut raw = serde_json::to_value(legacy_profile()).unwrap();
+    raw["settings"]
+        .as_object_mut()
+        .unwrap()
+        .remove("proxy_port");
+    let restored: Profile = serde_json::from_value(raw).unwrap();
+    assert_eq!(restored.settings.proxy_port, 2080);
+    assert_eq!(restored.settings.dns_provider, "quad9");
+    assert_eq!(restored.servers.len(), 1);
+}
+
+#[test]
+fn proxy_port_rejects_privileged_and_zero_ports() {
+    let mut settings = smart_vpn_engine::settings::Settings::default();
+    for port in [0, 80, 1023] {
+        settings.proxy_port = port;
+        assert!(settings.validate().is_err());
+    }
+    for port in [1024, 2080, 65535] {
+        settings.proxy_port = port;
+        assert!(settings.validate().is_ok());
+    }
+}

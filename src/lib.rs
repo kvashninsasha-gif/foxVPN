@@ -1,4 +1,5 @@
 pub mod latency;
+pub mod lifecycle;
 pub mod routing;
 pub mod servers;
 pub mod settings;

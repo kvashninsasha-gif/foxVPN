@@ -154,3 +154,86 @@ fn kill_switch_guard_prevents_unsafe_connect() {
     );
     assert!(result.err().unwrap().contains("Защита при обрыве"));
 }
+
+#[test]
+fn stable_proxy_port_survives_restarts_and_isolated_probes() {
+    let Ok(binary) = std::env::var("SMARTVPN_TEST_CORE") else {
+        return;
+    };
+    let server =
+        Server::parse("vless://123e4567-e89b-12d3-a456-426614174000@127.0.0.1:443?security=none")
+            .unwrap();
+    let settings = Settings {
+        mode: Mode::Direct,
+        tun: false,
+        kill_switch: false,
+        ..Settings::default()
+    };
+    let port = free_port().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let http_port = listener.local_addr().unwrap().port();
+    let thread = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(8)))
+                .unwrap();
+            let mut request = [0; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nSTABLE",
+                )
+                .unwrap();
+        }
+    });
+    for _ in 0..3 {
+        let core = CoreProcess::start_on_port(
+            std::path::Path::new(&binary),
+            &server,
+            &settings,
+            &[],
+            port,
+        )
+        .unwrap();
+        assert_eq!(core.proxy_port, port);
+        let probe =
+            CoreProcess::start(std::path::Path::new(&binary), &server, &settings, &[]).unwrap();
+        assert_ne!(probe.proxy_port, port);
+        let response = latency::client(port)
+            .unwrap()
+            .get(format!("http://127.0.0.1:{http_port}/"))
+            .send()
+            .unwrap();
+        assert_eq!(response.text().unwrap(), "STABLE");
+        drop(probe);
+        let dir = core.dir.clone();
+        drop(core);
+        assert!(!dir.exists());
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+    thread.join().unwrap();
+}
+
+#[test]
+fn occupied_port_is_rejected_without_touching_an_existing_listener() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server =
+        Server::parse("vless://123e4567-e89b-12d3-a456-426614174000@127.0.0.1:443?security=none")
+            .unwrap();
+    let settings = Settings {
+        tun: false,
+        kill_switch: false,
+        ..Settings::default()
+    };
+    assert!(CoreProcess::start_on_port(
+        std::path::Path::new("unused"),
+        &server,
+        &settings,
+        &[],
+        port
+    )
+    .is_err());
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+}

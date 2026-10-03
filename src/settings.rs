@@ -10,6 +10,7 @@ pub struct Settings {
     pub tun: bool,
     pub kill_switch: bool,
     pub proxy_acknowledged: bool,
+    pub proxy_port: u16,
     pub dns_protection: bool,
     pub dns_provider: String,
     pub dns_transport: String,
@@ -29,6 +30,7 @@ impl Default for Settings {
             tun: true,
             kill_switch: true,
             proxy_acknowledged: false,
+            proxy_port: 2080,
             dns_protection: true,
             dns_provider: "cloudflare".into(),
             dns_transport: "https".into(),
@@ -45,6 +47,9 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
+        if self.proxy_port < 1024 {
+            return Err(crate::text("proxy_port_invalid").into());
+        }
         if !(10..=3600).contains(&self.health_interval) {
             return Err(crate::text("message_285").into());
         }

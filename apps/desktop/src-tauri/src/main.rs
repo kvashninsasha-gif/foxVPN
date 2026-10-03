@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, Submenu},
     tray::TrayIconBuilder,
     Emitter, Manager,
 };
@@ -54,10 +54,7 @@ fn edit<T>(s: &State, f: impl FnOnce(&mut Profile) -> Result<T, String>) -> Resu
 #[tauri::command]
 fn snapshot(s: tauri::State<State>) -> Snapshot {
     let (proxy_port, logs) = {
-        let mut core = s.core.lock().unwrap();
-        if core.as_mut().is_some_and(|c| !c.alive()) {
-            *s.status.lock().unwrap() = "reconnecting".into();
-        }
+        let core = s.core.lock().unwrap();
         (
             core.as_ref().map(|c| c.proxy_port),
             core.as_ref()
@@ -73,6 +70,25 @@ fn snapshot(s: tauri::State<State>) -> Snapshot {
         proxy_port,
         core_version: "1.14.2".into(),
         logs,
+    }
+}
+#[derive(Serialize)]
+struct RuntimeSnapshot {
+    status: String,
+    proxy_port: Option<u16>,
+    logs: Option<Vec<String>>,
+}
+#[tauri::command]
+fn runtime(include_logs: bool, s: tauri::State<State>) -> RuntimeSnapshot {
+    let core = s.core.lock().unwrap();
+    RuntimeSnapshot {
+        status: s.status.lock().unwrap().clone(),
+        proxy_port: core.as_ref().map(|c| c.proxy_port),
+        logs: include_logs.then(|| {
+            core.as_ref()
+                .map(|c| c.logs.lock().unwrap().clone())
+                .unwrap_or_default()
+        }),
     }
 }
 #[tauri::command]
@@ -211,8 +227,14 @@ fn connect_impl(s: &State) -> Result<u16, String> {
     if !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(smart_vpn_engine::text("connection_cancelled").into());
     }
-    if let Some(c) = s.core.lock().unwrap().as_ref() {
-        return Ok(c.proxy_port);
+    {
+        let mut core = s.core.lock().unwrap();
+        if let Some(c) = core.as_mut() {
+            if c.alive() {
+                return Ok(c.proxy_port);
+            }
+        }
+        *core = None;
     }
     let p = s.profile.lock().unwrap().clone();
     if connection_plan(&p) == ConnectionPlan::NeedsProxyConsent {
@@ -225,7 +247,13 @@ fn connect_impl(s: &State) -> Result<u16, String> {
         .ok_or(smart_vpn_engine::text("message_320"))?;
     *s.status.lock().unwrap() = "connecting".into();
     let result = (|| {
-        let core = CoreProcess::start(&s.binary, server, &p.settings, &p.rules)?;
+        let core = CoreProcess::start_on_port(
+            &s.binary,
+            server,
+            &p.settings,
+            &p.rules,
+            p.settings.proxy_port,
+        )?;
         let c = latency::client(core.proxy_port)?;
         c.get("https://www.gstatic.com/generate_204")
             .send()
@@ -691,7 +719,10 @@ fn main() {
             let close =
                 MenuItem::with_id(app, "hide", t("hide_window"), true, Some("CmdOrCtrl+W"))?;
             let exit = MenuItem::with_id(app, "exit-app", t("exit"), true, Some("CmdOrCtrl+Q"))?;
-            app.set_menu(Menu::with_items(app, &[&close, &exit])?)?;
+            let open = MenuItem::with_id(app, "show-app", t("open_app"), true, None::<&str>)?;
+            let app_menu =
+                Submenu::with_items(app, "Smart VPN Router", true, &[&open, &close, &exit])?;
+            app.set_menu(Menu::with_items(app, &[&app_menu])?)?;
             if profile.settings.start_minimized
                 && !(profile.settings.auto_connect
                     && connection_plan(&profile) != ConnectionPlan::Ready)
@@ -718,13 +749,40 @@ fn main() {
                         }
                     }
                 }
-                let mut last = std::time::Instant::now();
+                let mut clock = smart_vpn_engine::lifecycle::RecoveryClock::new(
+                    std::time::Instant::now(),
+                    std::time::SystemTime::now(),
+                );
                 let mut last_sub = std::time::Instant::now();
                 loop {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    let p = state.profile.lock().unwrap().clone();
-                    if last.elapsed().as_secs() >= p.settings.health_interval {
-                        last = std::time::Instant::now();
+                    let running = state.wanted.load(std::sync::atomic::Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_secs(if running {
+                        2
+                    } else {
+                        10
+                    }));
+                    let settings = state.profile.lock().unwrap().settings.clone();
+                    let dead = state
+                        .core
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .is_some_and(|c| !c.alive());
+                    if clock.due(
+                        std::time::Instant::now(),
+                        std::time::SystemTime::now(),
+                        std::time::Duration::from_secs(settings.health_interval),
+                        dead,
+                    ) {
+                        if dead {
+                            stop_core(&state);
+                            if !settings.restore {
+                                state
+                                    .wanted
+                                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            let _ = handle.emit("servers-updated", ());
+                        }
                         let endpoint = state.core.lock().unwrap().as_ref().map(|c| c.proxy_port);
                         if let Some(port) = endpoint {
                             let ok = latency::client(port)
@@ -736,23 +794,35 @@ fn main() {
                                 })
                                 .unwrap_or(false);
                             if !ok && state.wanted.load(std::sync::atomic::Ordering::SeqCst) {
-                                *state.status.lock().unwrap() = "reconnecting".into();
                                 stop_core(&state);
-                                if p.settings.failover {
-                                    for server in &p.servers {
-                                        if p.settings.favorites_only && !server.favorite {
+                                if !settings.restore {
+                                    state
+                                        .wanted
+                                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                                } else if settings.failover {
+                                    let servers = state.profile.lock().unwrap().servers.clone();
+                                    for server in &servers {
+                                        if !state.wanted.load(std::sync::atomic::Ordering::SeqCst) {
+                                            break;
+                                        }
+                                        if settings.favorites_only && !server.favorite {
                                             continue;
                                         }
                                         if test_impl(&state, &server.id, false).is_ok() {
                                             let _ = edit(&state, |p| {
-                                                p.selected = Some(server.id.clone());
+                                                if state
+                                                    .wanted
+                                                    .load(std::sync::atomic::Ordering::SeqCst)
+                                                {
+                                                    p.selected = Some(server.id.clone());
+                                                }
                                                 Ok(())
                                             });
                                             break;
                                         }
                                     }
                                 }
-                                if p.settings.restore
+                                if settings.restore
                                     && state.wanted.load(std::sync::atomic::Ordering::SeqCst)
                                 {
                                     if let Err(e) = connect_impl(&state) {
@@ -761,19 +831,22 @@ fn main() {
                                 }
                                 let _ = handle.emit("servers-updated", ());
                             }
-                        } else if p.settings.restore
+                        } else if settings.restore
                             && state.wanted.load(std::sync::atomic::Ordering::SeqCst)
                         {
-                            let _ = connect_impl(&state);
+                            if let Err(e) = connect_impl(&state) {
+                                let _ = handle.emit("operation-error", e);
+                            }
                             let _ = handle.emit("servers-updated", ());
                         }
                     }
-                    if p.settings.subscription_interval > 0
-                        && last_sub.elapsed().as_secs() >= p.settings.subscription_interval
+                    if settings.subscription_interval > 0
+                        && last_sub.elapsed().as_secs() >= settings.subscription_interval
                     {
                         last_sub = std::time::Instant::now();
                         if state.core.lock().unwrap().is_none() {
-                            for sub in &p.subscriptions {
+                            let subscriptions = state.profile.lock().unwrap().subscriptions.clone();
+                            for sub in &subscriptions {
                                 let _ = update_sub(&state, &sub.id);
                             }
                             let _ = handle.emit("servers-updated", ());
@@ -784,6 +857,12 @@ fn main() {
             Ok(())
         })
         .on_menu_event(|app, e| match e.id.as_ref() {
+            "show-app" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
             "hide" => {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
@@ -803,6 +882,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            runtime,
             import_servers,
             select_server,
             delete_server,
