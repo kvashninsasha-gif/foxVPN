@@ -31,6 +31,7 @@ final class DNSQuery {
     private let done = DispatchSemaphore(value: 0)
     private var reference: DNSServiceRef?
     private var answers: [Data] = []
+    private var responseBytes = 0
     private var finished = false
     private var failure: Error?
     init(question: DNSMessage, interfaceIndex: UInt32) { self.question = question; self.interfaceIndex = interfaceIndex }
@@ -44,7 +45,7 @@ final class DNSQuery {
                 guard status == kDNSServiceErr_NoError else { query.finish(NSError(domain: "DNSService", code: Int(status))); return }
                 guard query.answers.count < 256 else { query.finish(FoxError.invalid("Слишком много DNS-записей.")); return }
                 if flags & DNSServiceFlags(kDNSServiceFlagsAdd) != 0, let name, let bytes {
-                    do { query.answers.append(try DNSMessage.answer(name: String(cString: name), type: type, recordClass: recordClass, ttl: ttl, payload: Data(bytes: bytes, count: Int(size)))) }
+                    do { let answer = try DNSMessage.answer(name: String(cString: name), type: type, recordClass: recordClass, ttl: ttl, payload: Data(bytes: bytes, count: Int(size))); guard query.responseBytes + answer.count + query.question.question.count + 12 <= 65535 else { throw FoxError.invalid("DNS-ответ слишком большой.") }; query.responseBytes += answer.count; query.answers.append(answer) }
                     catch { query.finish(error); return }
                 }
                 if flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 { query.finish() }

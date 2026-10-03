@@ -1,10 +1,15 @@
 import Foundation
 import Security
 
-public final class ProfileVault {
-    private let service = "ru.smartvpn.router.ios.profile"
+public protocol ProfileStoring {
+    func load() throws -> VPNProfile
+    func save(_ profile: VPNProfile) throws
+}
+
+public final class ProfileVault: ProfileStoring {
+    private let service: String
     private let account = "profile-v1"
-    public init() {}
+    public init(service: String = "ru.smartvpn.router.ios.profile") { self.service = service }
     private func query() -> [String: Any] {
         var result: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         #if os(iOS) && !targetEnvironment(simulator)

@@ -68,4 +68,50 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(rules[2]["outbound"] as? String, "vpn"); XCTAssertNotNil(rules[3]["domain_suffix"])
         XCTAssertNil(json["experimental"]); XCTAssertEqual((json["inbounds"] as! [[String: Any]]).count, 1)
     }
+    func testFingerprintsDoNotCollideOnParameterSeparators() throws {
+        var a = try VPNServer.parse(base), b = a
+        a.params["a"] = "x=y"; b.params["a=x"] = "y"
+        XCTAssertNotEqual(a.fingerprint, b.fingerprint)
+    }
+    func testLargeImportDeduplicatesWithoutLosingServers() throws {
+        let links = (0..<2000).map { base.replacingOccurrences(of: "example.com", with: "vpn-\($0).example.com") }.joined(separator: "\n")
+        var p = VPNProfile(); XCTAssertEqual(try p.importLinks(links), 2000); XCTAssertEqual(try p.importLinks(links), 0)
+        XCTAssertEqual(p.servers.count, 2000); try p.validate()
+    }
+    func testSubscriptionReplacementPreservesSelectionAndPersonalMetadata() throws {
+        var p = VPNProfile(); let sub = VPNSubscription(id: "fixture-sub", name: "Fixture", url: "https://example.com/sub")
+        p.subscriptions = [sub]; _ = try p.importLinks(base, subscription: sub.id)
+        p.servers[0].favorite = true; p.servers[0].group = "Work"; p.servers[0].name = "My server"
+        let selected = p.selected
+        try p.replaceSubscription(sub.id, content: base + "\n" + base.replacingOccurrences(of: "example.com", with: "second.example.com"))
+        XCTAssertEqual(p.selected, selected); XCTAssertEqual(p.servers[0].name, "My server"); XCTAssertTrue(p.servers[0].favorite); XCTAssertEqual(p.servers[0].group, "Work")
+        XCTAssertEqual(p.subscriptions[0].server_count, 2)
+        let before = p.servers; XCTAssertThrowsError(try p.replaceSubscription(sub.id, content: "invalid")); XCTAssertEqual(p.servers, before)
+    }
+    func testSubscriptionRemovalCanKeepOrRemoveOwnedServers() throws {
+        var p = VPNProfile(); p.subscriptions = [VPNSubscription(id: "sub", name: "Fixture", url: "https://example.com/sub")]
+        _ = try p.importLinks(base, subscription: "sub"); let selected = p.selected
+        var removed = p; removed.removeSubscription("sub", removeServers: true); XCTAssertTrue(removed.servers.isEmpty); XCTAssertNil(removed.selected); try removed.validate()
+        p.removeSubscription("sub", removeServers: false); XCTAssertEqual(p.selected, selected); XCTAssertNil(p.servers[0].subscription); try p.validate()
+    }
+    func testExportUsesDesktopFieldsAndReimports() throws {
+        var p = try profile(); p.settings.dns_transport = "local"
+        p.subscriptions = [VPNSubscription(id: "sub", name: "Fixture", url: "https://example.com/sub")]; p.servers[0].subscription = "sub"
+        let data = try p.exportData(); let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual((json["settings"] as! [String: Any])["dns_protection"] as? Bool, false)
+        XCTAssertEqual((json["subscriptions"] as! [[String: Any]])[0]["server_count"] as? Int, 1)
+        guard case .profile(let restored) = try ProfileImport.parse(data) else { return XCTFail("Expected profile") }
+        XCTAssertEqual(restored.servers, p.servers); XCTAssertEqual(restored.selected, p.selected)
+    }
+    func testFileImportBOMAndMalformedProfile() throws {
+        let text = Data(("\u{feff}" + base).utf8)
+        guard case .links(let links) = try ProfileImport.parse(text) else { return XCTFail("Expected links") }
+        XCTAssertEqual(links, base)
+        XCTAssertThrowsError(try ProfileImport.parse(Data("{bad".utf8)))
+        XCTAssertThrowsError(try ProfileImport.parse(Data([0xff, 0xfe])))
+    }
+    func testSmartTopLevelDomainMatchesEngineSuffixRules() throws {
+        let p = try profile(); XCTAssertEqual(try p.route(for: "ru"), "direct"); XCTAssertEqual(try p.route(for: "рф"), "direct")
+    }
+
 }

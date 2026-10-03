@@ -8,138 +8,138 @@ import SwiftUI
     @Published private(set) var healthy = false
     @Published private(set) var busy = false
     @Published private(set) var loaded = false
+    @Published private(set) var checking = false
     @Published var importPresented = false
     @Published var error: String?
     @Published var notice: String?
     @Published var upload: Int64 = 0
     @Published var download: Int64 = 0
-    private var manager: NETunnelProviderManager?
-    private var observer: NSObjectProtocol?
-    private let vault = ProfileVault()
-    private let testing = ProcessInfo.processInfo.arguments.contains("--ui-testing")
+    private let vault: ProfileStoring
+    private let backend: TunnelBackend
+    private let internet: InternetChecking
+    private var healthTask: Task<Void, Never>?
+    private var monitorTask: Task<Void, Never>?
+    private var epoch = UUID()
+    private var revision = UUID()
+    private let healthFailure = "Туннель активен, но доступ к интернету не подтверждён. Проверьте сервер и сеть."
     var active: Bool { [.connected, .connecting, .reasserting, .disconnecting].contains(status) }
     var editable: Bool { loaded && !active && !busy }
-    var title: String { switch status { case .connected: return healthy ? "Подключено" : "Проверяем связь"; case .connecting: return "Подключаемся"; case .reasserting: return "Восстанавливаем"; case .disconnecting: return "Отключаемся"; default: return "Отключено" } }
-
-    init() {
-        do { if !testing { profile = try vault.load() }; loaded = true }
-        catch { self.error = "Профиль не загружен. Разблокируйте устройство и откройте приложение снова. Сохранённые данные не заменены." }
-        observer = NotificationCenter.default.addObserver(forName: .NEVPNStatusDidChange, object: nil, queue: .main) { [weak self] note in
-            Task { @MainActor [weak self] in
-                guard let self, let connection = note.object as? NEVPNConnection, connection === self.manager?.connection else { return }
-                self.status = connection.status
-                if self.status != .connected { self.healthy = false; self.upload = 0; self.download = 0 }
-                else { await self.checkConnection() }
+    var title: String {
+        if !loaded { return busy ? "Загружаем профиль" : "Профиль недоступен" }
+        switch status { case .connected: return healthy ? "Подключено" : "Проверяем связь"; case .connecting: return "Подключаемся"; case .reasserting: return "Восстанавливаем"; case .disconnecting: return "Отключаемся"; default: return "Отключено" }
+    }
+    convenience init() {
+        self.init(vault: ProcessInfo.processInfo.arguments.contains("--ui-testing") ? MemoryProfileStore() : ProfileVault(), backend: SystemTunnelBackend(), internet: HTTPSInternetChecker())
+    }
+    init(vault: ProfileStoring, backend: TunnelBackend, internet: InternetChecking, automaticLoad: Bool = true) {
+        self.vault = vault; self.backend = backend; self.internet = internet
+        backend.onStatusChange = { [weak self] in self?.acceptStatus($0) }
+        if automaticLoad { Task { [weak self] in await self?.reload() } }
+    }
+    deinit { healthTask?.cancel(); monitorTask?.cancel() }
+    func reload() async {
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do {
+            try await backend.load()
+            let value = try vault.load(); try value.validate()
+            profile = value; loaded = true; revision = UUID(); error = nil
+            acceptStatus(backend.status)
+        } catch {
+            // Loading failures never overwrite the old record or allow saving an empty one.
+            acceptStatus(backend.status); loaded = false; self.error = "Профиль или настройки VPN не загружены. Разблокируйте iPhone и повторите. Сохранённые данные не заменены."
+        }
+    }
+    private func acceptStatus(_ value: NEVPNStatus) {
+        status = value; epoch = UUID(); checking = false
+        healthTask?.cancel(); monitorTask?.cancel()
+        healthy = false
+        if value != .connected { upload = 0; download = 0; return }
+        scheduleHealthCheck()
+        let token = epoch
+        monitorTask = Task { [weak self] in
+            var ticks = 0
+            while !Task.isCancelled {
+                guard let self, self.epoch == token, self.status == .connected else { return }
+                await self.refreshStatistics()
+                ticks += 1
+                if ticks % 5 == 0 { self.scheduleHealthCheck() }
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
             }
         }
-        if !testing { Task { await loadManager() } }
     }
-    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
-    private func loadManager() async {
+    func change(_ update: (inout VPNProfile) throws -> Void) -> Bool {
+        guard editable else { error = loaded ? "Сначала отключите VPN и дождитесь завершения операции." : "Сначала загрузите сохранённый профиль."; return false }
         do {
-            let values = try await NETunnelProviderManager.loadAllFromPreferences()
-            manager = values.first { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.extensionID }
-            status = manager?.connection.status ?? .disconnected
-            if status == .connected { await checkConnection() }
-        } catch { self.error = "Не удалось прочитать настройки VPN iOS." }
+            var copy = profile; try update(&copy); try copy.validate(); try vault.save(copy)
+            profile = copy; revision = UUID(); error = nil; return true
+        } catch { self.error = error.localizedDescription; return false }
     }
-    static var extensionID: String { (Bundle.main.bundleIdentifier ?? "ru.smartvpn.router.ios") + ".tunnel" }
-    func change(_ update: (inout VPNProfile) throws -> Void) {
-        guard editable else { error = "Сначала отключите VPN."; return }
-        do { var copy = profile; try update(&copy); try copy.validate(); if !testing { try vault.save(copy) }; profile = copy; error = nil }
-        catch { self.error = error.localizedDescription }
+    func importLinks(_ text: String) {
+        var count = 0
+        if change({ count = try $0.importLinks(text) }) { notice = count == 0 ? "Все серверы уже есть в списке" : "Добавлено серверов: \(count)" }
     }
-    func importLinks(_ text: String) { change { profile in let count = try profile.importLinks(text); notice = "Добавлено серверов: \(count)" } }
     func importFile(_ data: Data) {
-        guard data.count <= 4_000_000 else { error = "Файл слишком большой."; return }
-        if let text = String(data: data, encoding: .utf8), text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("vless://") { importLinks(text); return }
-        change { current in let value = try JSONDecoder().decode(VPNProfile.self, from: data); try value.validate(); current = value; notice = "Профиль восстановлен" }
-    }
-    func toggleConnection() async {
-        guard !busy, loaded else { return }
-        busy = true; error = nil; defer { busy = false }
         do {
-            #if targetEnvironment(simulator)
-            throw FoxError.invalid("Симулятор проверяет интерфейс. Для системного VPN установите подписанное приложение на настоящий iPhone.")
-            #else
-            if active {
-                manager?.isOnDemandEnabled = false
-                if let manager { try await manager.saveToPreferences() }
-                manager?.connection.stopVPNTunnel(); return
+            let value = try ProfileImport.parse(data)
+            switch value {
+            case .links(let text): importLinks(text)
+            case .profile(let profile): if change({ $0 = profile }) { notice = "Профиль восстановлен" }
             }
-            guard let server = profile.selectedServer else { throw FoxError.noServer }
-            _ = try TunnelConfiguration.make(profile: profile)
-            try vault.save(profile)
-            let value = manager ?? NETunnelProviderManager()
-            let configuration = NETunnelProviderProtocol()
-            configuration.providerBundleIdentifier = Self.extensionID
-            configuration.serverAddress = "foxVPN"
-            configuration.providerConfiguration = ["profileVersion": 1]
-            configuration.includeAllNetworks = profile.settings.include_all_networks
-            configuration.excludeLocalNetworks = false
-            value.protocolConfiguration = configuration; value.localizedDescription = "foxVPN"; value.isEnabled = true
-            let rule = NEOnDemandRuleConnect(); rule.interfaceTypeMatch = .any
-            value.onDemandRules = profile.settings.auto_connect ? [rule] : []
-            value.isOnDemandEnabled = profile.settings.auto_connect
-            try await value.saveToPreferences(); try await value.loadFromPreferences()
-            manager = value; healthy = false
-            try value.connection.startVPNTunnel()
-            status = value.connection.status
-            notice = "Подключаем \(server.name)"
-            #endif
         } catch { self.error = error.localizedDescription }
     }
-    func checkConnection() async {
-        guard status == .connected else { return }
-        let configuration = URLSessionConfiguration.ephemeral; configuration.timeoutIntervalForRequest = 12; configuration.connectionProxyDictionary = [:]
-        let session = URLSession(configuration: configuration); defer { session.invalidateAndCancel() }
+    func toggleConnection() async {
+        guard !busy, (loaded || active) else { return }
+        busy = true; error = nil; defer { busy = false }
         do {
-            let (_, response) = try await session.data(from: URL(string: "https://www.gstatic.com/generate_204")!)
-            guard (response as? HTTPURLResponse)?.statusCode == 204 else { throw FoxError.invalid("Проверка связи не прошла.") }
-            if status == .connected { healthy = true; error = nil; notice = nil }
-        } catch { if status == .connected { healthy = false; self.error = "Туннель активен, но доступ к интернету не подтверждён. Проверьте сервер и сеть." } }
+            guard backend.supportsTunnel else { throw FoxError.invalid("Симулятор проверяет интерфейс. Для системного VPN установите подписанное приложение на настоящий iPhone.") }
+            if active { try await backend.stop(); return }
+            guard let server = profile.selectedServer else { throw FoxError.noServer }
+            _ = try TunnelConfiguration.make(profile: profile); try vault.save(profile)
+            try await backend.start(settings: profile.settings)
+            notice = "Подключаем \(server.name)"
+        } catch { self.error = error.localizedDescription }
+    }
+    private func scheduleHealthCheck() {
+        guard !checking else { return }
+        healthTask = Task { [weak self] in await self?.checkConnection() }
+    }
+    func checkConnection() async {
+        guard status == .connected, !checking else { return }
+        checking = true; let token = epoch
+        defer { if epoch == token { checking = false } }
+        do {
+            let result = try await internet.check()
+            guard epoch == token, status == .connected, !Task.isCancelled else { return }
+            healthy = result
+            if !result { error = healthFailure } else if error == healthFailure { error = nil }
+        } catch {
+            guard epoch == token, status == .connected, !Task.isCancelled else { return }
+            healthy = false; self.error = healthFailure
+        }
     }
     func refreshStatistics() async {
-        guard status == .connected, let session = manager?.connection as? NETunnelProviderSession else { return }
+        guard status == .connected else { return }; let token = epoch
         do {
-            let response: Data? = try await withCheckedThrowingContinuation { continuation in
-                do { try session.sendProviderMessage(Data("stats".utf8)) { continuation.resume(returning: $0) } }
-                catch { continuation.resume(throwing: error) }
-            }
-            if let response, let values = try JSONSerialization.jsonObject(with: response) as? [String: NSNumber] { upload = values["upload"]?.int64Value ?? 0; download = values["download"]?.int64Value ?? 0 }
-        } catch { /* Counters are optional; never replace real connection status. */ }
+            let response = try await backend.statistics()
+            guard epoch == token, status == .connected, !Task.isCancelled, let response,
+                  let values = try JSONSerialization.jsonObject(with: response) as? [String: NSNumber] else { return }
+            upload = max(0, values["upload"]?.int64Value ?? 0); download = max(0, values["download"]?.int64Value ?? 0)
+        } catch { /* Optional counters never change real VPN status. */ }
     }
     func updateSubscription(_ id: String) async {
-        guard editable, let sub = profile.subscriptions.first(where: { $0.id == id }), let url = URL(string: sub.url), url.scheme == "https" else { return }
-        busy = true; defer { busy = false }
+        guard editable, let sub = profile.subscriptions.first(where: { $0.id == id }), let url = URL(string: sub.url) else { return }
+        busy = true; let token = revision; defer { busy = false }
         do {
-            let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 20
-            let session = URLSession(configuration: config, delegate: HTTPSRedirectPolicy(), delegateQueue: nil); defer { session.invalidateAndCancel() }
-            var data = Data()
-            let (bytes, response) = try await session.bytes(from: url)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode), http.url?.scheme == "https" else { throw FoxError.invalid("Подписка недоступна по HTTPS.") }
-            for try await byte in bytes { data.append(byte); if data.count > 4_000_000 { throw FoxError.invalid("Подписка слишком большая.") } }
-            let text = try SubscriptionContent.decode(data)
-            var replacement = VPNProfile(); _ = try replacement.importLinks(text, subscription: id)
-            guard !replacement.servers.isEmpty else { throw FoxError.invalid("В подписке нет корректных серверов.") }
-            var copy = profile
-            let oldSelected = copy.selectedServer
-            let oldServers = copy.servers.filter { $0.subscription == id }
-            copy.servers.removeAll { $0.subscription == id }
-            for var server in replacement.servers {
-                if let old = oldServers.first(where: { $0.fingerprint == server.fingerprint }) { server.id = old.id; server.favorite = old.favorite; server.group = old.group }
-                if !copy.servers.contains(where: { $0.fingerprint == server.fingerprint }) { copy.servers.append(server) }
-            }
-            if let oldSelected, !copy.servers.contains(where: { $0.id == oldSelected.id }) { copy.selected = copy.servers.first(where: { $0.fingerprint == oldSelected.fingerprint })?.id ?? copy.servers.first?.id }
-            copy.subscriptions[copy.subscriptions.firstIndex(where: { $0.id == id })!].updated_at = UInt64(Date().timeIntervalSince1970)
-            try copy.validate(); if !testing { try vault.save(copy) }; profile = copy; notice = "Подписка обновлена"; error = nil
-        } catch { self.error = "Не удалось обновить подписку. Сохранённый список не изменён." }
+            let text = try await SubscriptionFetcher.fetch(url)
+            guard !active, token == revision else { throw FoxError.invalid("VPN или профиль изменился. Повторите обновление после отключения.") }
+            var copy = profile; try copy.replaceSubscription(id, content: text)
+            try vault.save(copy); profile = copy; revision = UUID(); notice = "Подписка обновлена"; error = nil
+        } catch { self.error = "Не удалось обновить подписку. Сохранённый список не изменён. " + ((error as? FoxError)?.localizedDescription ?? "") }
     }
 }
 
-private final class HTTPSRedirectPolicy: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        guard let url = request.url, url.scheme == "https", url.user == nil, url.password == nil else { completionHandler(nil); return }
-        completionHandler(request)
-    }
+final class MemoryProfileStore: ProfileStoring {
+    private var value = VPNProfile()
+    func load() throws -> VPNProfile { value }
+    func save(_ profile: VPNProfile) throws { value = profile }
 }
