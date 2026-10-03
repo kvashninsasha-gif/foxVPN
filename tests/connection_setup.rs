@@ -83,3 +83,20 @@ fn enabling_unsupported_option_requires_setup_again() {
         ConnectionPlan::NeedsProxyConsent
     );
 }
+
+#[test]
+fn proxy_choice_survives_restart_settings_save_and_server_selection() {
+    let p = legacy_profile();
+    let chosen = settings::prepare_proxy(&p, p.selected.as_deref().unwrap()).unwrap();
+    let mut restored: Profile =
+        serde_json::from_slice(&serde_json::to_vec(&chosen).unwrap()).unwrap();
+    restored.settings.health_interval = 60;
+    let other = Server::parse(
+        "vless://123e4567-e89b-12d3-a456-426614174001@example.org:443?security=tls#Other",
+    )
+    .unwrap();
+    restored.selected = Some(other.id.clone());
+    restored.servers.push(other);
+    restored.validate().unwrap();
+    assert_eq!(settings::connection_plan(&restored), ConnectionPlan::Ready);
+}

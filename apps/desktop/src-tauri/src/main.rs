@@ -20,6 +20,7 @@ use tauri::{
 #[derive(Clone)]
 struct State {
     profile: Arc<Mutex<Profile>>,
+    vault: Arc<Vault>,
     core: Arc<Mutex<Option<CoreProcess>>>,
     binary: PathBuf,
     status: Arc<Mutex<String>>,
@@ -35,9 +36,6 @@ struct Snapshot {
     connection_plan: ConnectionPlan,
     logs: Vec<String>,
 }
-fn persist(p: &Profile) -> Result<(), String> {
-    Vault::new("ru.smartvpn.router").save(p)
-}
 fn edit<T>(s: &State, f: impl FnOnce(&mut Profile) -> Result<T, String>) -> Result<T, String> {
     let _operation = s
         .gate
@@ -49,7 +47,7 @@ fn edit<T>(s: &State, f: impl FnOnce(&mut Profile) -> Result<T, String>) -> Resu
         .map_err(|_| smart_vpn_engine::text("message_312"))?;
     let mut next = current.clone();
     let value = f(&mut next)?;
-    persist(&next)?;
+    s.vault.save(&next)?;
     *current = next;
     Ok(value)
 }
@@ -579,9 +577,8 @@ fn main() {
             None,
         ))
         .setup(move |app| {
-            let profile = Vault::new("ru.smartvpn.router")
-                .load()
-                .map_err(std::io::Error::other)?;
+            let vault = Arc::new(Vault::new("ru.smartvpn.router"));
+            let profile = vault.load().map_err(std::io::Error::other)?;
             profile.validate().map_err(std::io::Error::other)?;
             let resource = app
                 .path()
@@ -599,6 +596,7 @@ fn main() {
             };
             let state = State {
                 profile: Arc::new(Mutex::new(profile.clone())),
+                vault,
                 core: Arc::new(Mutex::new(None)),
                 binary,
                 status: Arc::new(Mutex::new("disconnected".into())),

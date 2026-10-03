@@ -137,9 +137,29 @@ impl Profile {
 use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rand::RngCore;
+use zeroize::Zeroizing;
+
+// One successful OS credential read per Vault/session. Failed or denied reads
+// remain retryable. The mutex also prevents concurrent first saves creating
+// different master keys. Never serialize this cache or expose it over IPC.
+#[derive(Default)]
+struct SessionKey(std::sync::Mutex<Option<Zeroizing<[u8; 32]>>>);
+impl SessionKey {
+    fn get(
+        &self,
+        read: impl FnOnce() -> Result<Zeroizing<[u8; 32]>, String>,
+    ) -> Result<Zeroizing<[u8; 32]>, String> {
+        let mut cached = self.0.lock().map_err(|_| crate::text("message_296"))?;
+        if cached.is_none() {
+            *cached = Some(read()?);
+        }
+        Ok(Zeroizing::new(**cached.as_ref().unwrap()))
+    }
+}
 pub struct Vault {
     service: String,
     path: std::path::PathBuf,
+    key: SessionKey,
 }
 impl Vault {
     pub fn new(service: &str) -> Self {
@@ -164,21 +184,34 @@ impl Vault {
         Self {
             service: service.into(),
             path: base.join(service).join("profile.enc"),
+            key: SessionKey::default(),
         }
     }
-    fn key(&self, create: bool) -> Result<[u8; 32], String> {
+    fn key(&self, create: bool) -> Result<Zeroizing<[u8; 32]>, String> {
+        self.key.get(|| self.read_key(create))
+    }
+    fn read_key(&self, create: bool) -> Result<Zeroizing<[u8; 32]>, String> {
         let e = keyring::Entry::new(&self.service, "master-key")
             .map_err(|_| crate::text("message_296"))?;
         match e.get_password() {
-            Ok(value) => STANDARD
-                .decode(value)
-                .map_err(|_| crate::text("message_297"))?
-                .try_into()
-                .map_err(|_| crate::text("message_297").into()),
+            Ok(value) => {
+                let value = Zeroizing::new(value);
+                let bytes = Zeroizing::new(
+                    STANDARD
+                        .decode(value.as_bytes())
+                        .map_err(|_| crate::text("message_297"))?,
+                );
+                let key: [u8; 32] = bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| crate::text("message_297"))?;
+                Ok(Zeroizing::new(key))
+            }
             Err(keyring::Error::NoEntry) if create => {
-                let mut key = [0u8; 32];
-                rand::rngs::OsRng.fill_bytes(&mut key);
-                e.set_password(&STANDARD.encode(key))
+                let mut key = Zeroizing::new([0u8; 32]);
+                rand::rngs::OsRng.fill_bytes(key.as_mut());
+                let encoded = Zeroizing::new(STANDARD.encode(key.as_ref()));
+                e.set_password(&encoded)
                     .map_err(|_| crate::text("message_298"))?;
                 Ok(key)
             }
@@ -190,13 +223,13 @@ impl Vault {
             return Ok(Profile::default());
         }
         let data = std::fs::read(&self.path).map_err(|_| crate::text("message_300"))?;
-        let plain = decrypt_profile(&self.key(false)?, &data)?;
+        let plain = Zeroizing::new(decrypt_profile(&*self.key(false)?, &data)?);
         serde_json::from_slice(&plain).map_err(|_| crate::text("message_301").into())
     }
     pub fn save(&self, p: &Profile) -> Result<(), String> {
         p.validate()?;
-        let plain = serde_json::to_vec(p).map_err(|_| crate::text("message_302"))?;
-        let data = encrypt_profile(&self.key(true)?, &plain)?;
+        let plain = Zeroizing::new(serde_json::to_vec(p).map_err(|_| crate::text("message_302"))?);
+        let data = encrypt_profile(&*self.key(true)?, &plain)?;
         let dir = self.path.parent().ok_or(crate::text("message_303"))?;
         std::fs::create_dir_all(dir).map_err(|_| crate::text("message_304"))?;
         #[cfg(unix)]
@@ -238,6 +271,51 @@ impl Vault {
         #[cfg(not(windows))]
         std::fs::rename(&temp, &self.path).map_err(|_| crate::text("message_302"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod session_key_tests {
+    use super::SessionKey;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn concurrent_operations_read_os_credential_once() {
+        let cache = Arc::new(SessionKey::default());
+        let reads = Arc::new(AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                let cache = Arc::clone(&cache);
+                let reads = Arc::clone(&reads);
+                scope.spawn(move || {
+                    for _ in 0..10 {
+                        let key = cache
+                            .get(|| {
+                                reads.fetch_add(1, Ordering::SeqCst);
+                                Ok(Zeroizing::new([42; 32]))
+                            })
+                            .unwrap();
+                        assert_eq!(*key, [42; 32]);
+                    }
+                });
+            }
+        });
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn denial_is_retryable_and_never_replaces_an_existing_key() {
+        let cache = SessionKey::default();
+        assert!(cache.get(|| Err("denied".into())).is_err());
+        assert_eq!(*cache.get(|| Ok(Zeroizing::new([7; 32]))).unwrap(), [7; 32]);
+        assert_eq!(
+            *cache.get(|| panic!("must not read the OS again")).unwrap(),
+            [7; 32]
+        );
     }
 }
 pub fn encrypt_profile(key: &[u8; 32], plain: &[u8]) -> Result<Vec<u8>, String> {

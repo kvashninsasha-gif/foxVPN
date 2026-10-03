@@ -36,4 +36,19 @@ fn actual_keychain_encrypted_profile_roundtrip() {
         vault.load().unwrap().servers[0].uuid,
         profile.servers[0].uuid
     );
+    // Removing only our isolated test credential makes any new OS read fail.
+    // Repeated edits must still use the key granted earlier in this session.
+    keyring::Entry::new(&service, "master-key")
+        .unwrap()
+        .delete_credential()
+        .unwrap();
+    for _ in 0..10 {
+        profile.servers[0].favorite = !profile.servers[0].favorite;
+        vault.save(&profile).unwrap();
+        assert_eq!(
+            vault.load().unwrap().servers[0].favorite,
+            profile.servers[0].favorite
+        );
+    }
+    assert!(Vault::new(&service).load().is_err());
 }
