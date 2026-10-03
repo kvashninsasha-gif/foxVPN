@@ -1,0 +1,113 @@
+name: foxVPN
+options:
+  minimumXcodeGenVersion: 2.46.0
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: '1'
+    CODE_SIGN_STYLE: Automatic
+    FOX_APP_GROUP: group.ru.smartvpn.router.ios
+    FOX_KEYCHAIN_GROUP: $(AppIdentifierPrefix)ru.smartvpn.router.ios.shared
+    TARGETED_DEVICE_FAMILY: '1'
+    ARCHS: arm64
+targets:
+  foxVPN:
+    type: application
+    platform: iOS
+    sources: [App, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.smartvpn.router.ios
+        PRODUCT_MODULE_NAME: FoxVPN
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: FoxVPNTunnel
+        embed: true
+      - sdk: NetworkExtension.framework
+      - sdk: Security.framework
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: foxVPN
+        FoxKeychainGroup: $(FOX_KEYCHAIN_GROUP)
+        FoxAppGroup: $(FOX_APP_GROUP)
+        NSCameraUsageDescription: Камера нужна только для сканирования QR вашего VPN-сервера.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIUserInterfaceStyle: Automatic
+        ITSAppUsesNonExemptEncryption: true
+    entitlements:
+      path: App/foxVPN.entitlements
+      properties:
+        com.apple.developer.networking.networkextension: [packet-tunnel-provider]
+        com.apple.security.application-groups: [$(FOX_APP_GROUP)]
+        keychain-access-groups: [$(FOX_KEYCHAIN_GROUP)]
+  FoxVPNTunnel:
+    type: app-extension
+    platform: iOS
+    sources: [Tunnel, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.smartvpn.router.ios.tunnel
+        PRODUCT_MODULE_NAME: FoxVPNTunnel
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    dependencies:
+      - framework: Frameworks/Libbox.xcframework
+        embed: false
+      - sdk: NetworkExtension.framework
+      - sdk: Network.framework
+      - sdk: Security.framework
+      - sdk: libresolv.tbd
+    info:
+      path: Tunnel/Info.plist
+      properties:
+        CFBundleDisplayName: foxVPN Tunnel
+        FoxKeychainGroup: $(FOX_KEYCHAIN_GROUP)
+        FoxAppGroup: $(FOX_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Tunnel/FoxVPNTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension: [packet-tunnel-provider]
+        com.apple.security.application-groups: [$(FOX_APP_GROUP)]
+        keychain-access-groups: [$(FOX_KEYCHAIN_GROUP)]
+  FoxVPNIntegrationTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [IntegrationTests, Tunnel/SystemDNS.swift]
+    dependencies:
+      - target: foxVPN
+      - framework: Frameworks/Libbox.xcframework
+        embed: false
+      - sdk: libresolv.tbd
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.smartvpn.router.ios.tests
+        OTHER_SWIFT_FLAGS: $(inherited) -D FOXVPN_DNS_TESTS
+        GENERATE_INFOPLIST_FILE: YES
+  FoxVPNUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: foxVPN
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.smartvpn.router.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  foxVPN:
+    build:
+      targets:
+        foxVPN: all
+    test:
+      targets: [FoxVPNIntegrationTests, FoxVPNUITests]
+      gatherCoverageData: true

@@ -15,3 +15,11 @@ apps/desktop/src-tauri/gen/
 
 __pycache__/
 *.py[cod]
+
+# iPhone build products and local signing
+apps/ios/.build/
+apps/ios/Frameworks/Libbox.xcframework/
+apps/ios/DerivedData/
+apps/ios/Local.xcconfig
+*.xcuserstate
+xcuserdata/
