@@ -1,0 +1,11 @@
+{
+  "version": "0.1.6",
+  "notes": "Проверка новых Mac-версий после запуска и вручную в настройках.\nСкачивание и установка только после вашего согласия: «Обновить», «Позже», «Пропустить эту версию».\nПроверка подписанного архива, сохранение прежней копии и восстановление при ошибке замены.\nПеред установкой VPN отключается, настройки сохраняются, foxVPN перезапускается.\nmacOS может отдельно запросить доступ к Keychain и подтверждение обновления сетевого компонента.",
+  "pub_date": "2026-10-04T06:01:13.038303Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.6/foxVPN-0.1.6-macOS-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbTd2eDVvTUNRaWxyK2dLMnlqQ3g1NFRPMUp0SVgwa1JhUjdXQ1M2Z1U3bWJ0RkhLQTNhZkxuSmV4d3ArSk1oVHVKT200M0x1ZlBmOG1nNTBPenpPUGdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMDkzNjcyCWZpbGU6Zm94VlBOLTAuMS42LW1hY09TLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjEuNgpXMCtTdkJMcGE2YmtUWlVqRGVnQnoyZ1VobUo3L3BRNi83cWJEekh5bWYvZUdhaExsTENVRFMxKzlGeGpxbU9XclhvRXFWWlFKRHdMa0VwZCthNm5BQT09Cg=="
+    }
+  }
+}
