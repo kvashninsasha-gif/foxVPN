@@ -1,11 +1,11 @@
 {
-  "version": "0.1.6",
-  "notes": "Проверка новых Mac-версий после запуска и вручную в настройках.\nСкачивание и установка только после вашего согласия: «Обновить», «Позже», «Пропустить эту версию».\nПроверка подписанного архива, сохранение прежней копии и восстановление при ошибке замены.\nПеред установкой VPN отключается, настройки сохраняются, foxVPN перезапускается.\nmacOS может отдельно запросить доступ к Keychain и подтверждение обновления сетевого компонента.",
-  "pub_date": "2026-10-04T06:01:13.038303Z",
+  "version": "0.1.7",
+  "notes": "foxVPN 0.1.7 — безопасное управление VPN и обновления\n\nСетевой компонент привязан к владельцу macOS и подписи приложения. Подтверждение отключения включает ядро, собственный DNS и PF. При отказе связи отображается неизвестное состояние; приложение и обновление не завершаются как успешные.\n\nОбновление с согласием: атомарная замена приложения, сохранение прежней копии, блокировка выхода во время установки, отмена и управление с клавиатуры.\n\nПосле установки обновите foxVPN-Network в настройках через штатный установщик macOS. Старая подпись компонента и Keychain могут потребовать отдельного системного подтверждения.\n\nПредварительная Apple Silicon-сборка без Developer ID и нотарификации. Полный MVP, системная приёмка 0.1.7, TUN-резервы, Windows-служба и физическая VPN-проверка iPhone ещё не завершены. План и проверенные ограничения: docs/readiness-plan.md и docs/verification-0.1.7.md.",
+  "pub_date": "2026-10-04T09:31:15.330971Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.6/foxVPN-0.1.6-macOS-arm64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbTd2eDVvTUNRaWxyK2dLMnlqQ3g1NFRPMUp0SVgwa1JhUjdXQ1M2Z1U3bWJ0RkhLQTNhZkxuSmV4d3ArSk1oVHVKT200M0x1ZlBmOG1nNTBPenpPUGdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMDkzNjcyCWZpbGU6Zm94VlBOLTAuMS42LW1hY09TLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjEuNgpXMCtTdkJMcGE2YmtUWlVqRGVnQnoyZ1VobUo3L3BRNi83cWJEekh5bWYvZUdhaExsTENVRFMxKzlGeGpxbU9XclhvRXFWWlFKRHdMa0VwZCthNm5BQT09Cg=="
+      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.7/foxVPN-0.1.7-macOS-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbTQwaG1CSjloTGRWYk5Rek9vYmExNVZ0d3hkOGV4WEc2UmZZdVA0VnJFWWdKUmFQRTk2UVJCQUVhbnlKUU5KWDBnUFNUV1hsejlNT2JMWW9DMEVpendZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMTA2Mjc1CWZpbGU6Zm94VlBOLTAuMS43LW1hY09TLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjEuNwpLWlF5UDRCUmE1NGlnYkFsZVdyTDNnVENUeER2S3ZSRE5lL29YQXFUME5NVklJeEpBUDF3WkRaaFpPaHJlOG1Qblp6ai9IZTZmaTNXc2JiZWJWdHNBZz09Cg=="
     }
   }
 }
