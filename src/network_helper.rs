@@ -84,6 +84,22 @@ pub fn installed() -> bool {
 pub fn valid_owner(uid: u32) -> bool {
     uid >= 501 && uid != CORE_UID && uid != u32::MAX && uid != 65534
 }
+/// A failed CDHash check closes IPC without a response. Diagnose the installed
+/// binding first, so migration is not reported as a broken network connection.
+pub fn binding_error(
+    expected_hash: Option<&str>,
+    expected_uid: Option<u32>,
+    hash: &str,
+    uid: u32,
+) -> Option<&'static str> {
+    if expected_uid.is_some_and(|owner| owner != uid) {
+        Some("helper_owner")
+    } else if expected_uid.is_none() || expected_hash != Some(hash) {
+        Some("helper_upgrade")
+    } else {
+        None
+    }
+}
 #[derive(Serialize, Deserialize)]
 pub struct Response {
     pub status: Status,
@@ -113,7 +129,25 @@ pub fn request(request: &Request) -> Result<Response, String> {
         os::unix::net::UnixStream,
         time::Duration,
     };
-    let mut stream = UnixStream::connect(SOCKET).map_err(|_| crate::text("helper_needed"))?;
+    if installed() {
+        let base = std::path::Path::new("/Library/PrivilegedHelperTools/foxVPN");
+        let hash = std::fs::read_to_string(base.join("client.cdhash")).ok();
+        let owner = std::fs::read_to_string(base.join("client.uid"))
+            .ok()
+            .and_then(|v| v.parse().ok());
+        if let Some(key) = binding_error(hash.as_deref(), owner, &self_hash()?, unsafe {
+            libc::getuid()
+        }) {
+            return Err(crate::text(key).into());
+        }
+    }
+    let mut stream = UnixStream::connect(SOCKET).map_err(|_| {
+        crate::text(if installed() {
+            "helper_ipc"
+        } else {
+            "helper_needed"
+        })
+    })?;
     stream
         .set_read_timeout(Some(Duration::from_secs(40)))
         .map_err(|_| crate::text("helper_ipc"))?;

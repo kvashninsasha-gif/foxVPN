@@ -1,6 +1,27 @@
 use smart_vpn_engine::network_helper::Request;
 use smart_vpn_engine::network_helper::{valid_owner, Status, CORE_UID, PROTOCOL};
 #[test]
+fn a_manual_update_diagnoses_old_binding_and_other_owner() {
+    use smart_vpn_engine::network_helper::binding_error;
+    assert_eq!(
+        binding_error(Some("old"), Some(501), "new", 501),
+        Some("helper_upgrade")
+    );
+    assert_eq!(
+        binding_error(Some("new"), None, "new", 501),
+        Some("helper_upgrade")
+    );
+    assert_eq!(
+        binding_error(None, Some(501), "new", 501),
+        Some("helper_upgrade")
+    );
+    assert_eq!(
+        binding_error(Some("new"), Some(502), "new", 501),
+        Some("helper_owner")
+    );
+    assert_eq!(binding_error(Some("new"), Some(501), "new", 501), None);
+}
+#[test]
 fn old_helpers_cannot_confirm_a_stop_or_enable_new_capabilities() {
     let old: Status = serde_json::from_str(r#"{"running":false,"wanted":false}"#).unwrap();
     assert!(!old.compatible());

@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod file_actions;
 #[cfg(target_os = "macos")]
 mod update_install;
 mod updates;
@@ -9,7 +10,7 @@ use smart_vpn_engine::{
     servers::{self, ImportReport},
     settings::{connection_plan, ConnectionPlan, Profile, Settings, Subscription, Vault},
     statistics,
-    vpn::{config, CoreProcess},
+    vpn::CoreProcess,
 };
 use std::{
     path::PathBuf,
@@ -200,6 +201,9 @@ async fn runtime(
 }
 #[tauri::command]
 fn import_servers(text: String, s: tauri::State<State>) -> Result<ImportReport, String> {
+    import_servers_state(text, &s)
+}
+fn import_servers_state(text: String, s: &State) -> Result<ImportReport, String> {
     if text.len() > 4_000_000 {
         return Err(smart_vpn_engine::text("message_313").into());
     }
@@ -735,22 +739,7 @@ fn delete_subscription(id: String, s: tauri::State<State>) -> Result<(), String>
         Ok(())
     })
 }
-#[tauri::command]
-fn import_file(path: String, s: tauri::State<State>) -> Result<ImportReport, String> {
-    let m = std::fs::metadata(&path).map_err(|_| smart_vpn_engine::text("message_332"))?;
-    if m.len() > 4_000_000 {
-        return Err(smart_vpn_engine::text("message_333").into());
-    }
-    let text = std::fs::read_to_string(path).map_err(|_| smart_vpn_engine::text("message_334"))?;
-    import_servers(text, s)
-}
-#[tauri::command]
-fn export_backup(path: String, s: tauri::State<State>) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(&*s.profile.lock().unwrap())
-        .map_err(|_| smart_vpn_engine::text("message_335"))?;
-    write_private(&path, &text)
-}
-fn write_private(path: &str, text: &str) -> Result<(), String> {
+fn write_private(path: &std::path::Path, text: &str) -> Result<(), String> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -763,50 +752,8 @@ fn write_private(path: &str, text: &str) -> Result<(), String> {
         .open(path)
         .map_err(|_| smart_vpn_engine::text("message_336"))?;
     f.write_all(text.as_bytes())
+        .and_then(|_| f.sync_all())
         .map_err(|_| smart_vpn_engine::text("message_337").into())
-}
-#[tauri::command]
-fn import_backup(path: String, s: tauri::State<State>) -> Result<(), String> {
-    if s.core.lock().unwrap().is_some() {
-        return Err(smart_vpn_engine::text("message_338").into());
-    }
-    let meta = std::fs::metadata(&path).map_err(|_| smart_vpn_engine::text("message_339"))?;
-    if meta.len() > 4_000_000 {
-        return Err(smart_vpn_engine::text("message_340").into());
-    }
-    let text = std::fs::read_to_string(path).map_err(|_| smart_vpn_engine::text("message_341"))?;
-    let p: Profile =
-        serde_json::from_str(&text).map_err(|_| smart_vpn_engine::text("message_342"))?;
-    p.validate()?;
-    edit(&s, |current| {
-        if s.core.lock().unwrap().is_some() {
-            return Err(smart_vpn_engine::text("disconnect_first").into());
-        }
-        *current = p;
-        Ok(())
-    })
-}
-#[tauri::command]
-fn export_config(path: String, s: tauri::State<State>) -> Result<(), String> {
-    let p = s.profile.lock().unwrap();
-    let server = p
-        .servers
-        .iter()
-        .find(|v| Some(&v.id) == p.selected.as_ref())
-        .ok_or(smart_vpn_engine::text("message_343"))?;
-    let tun_settings = Settings {
-        tun: true,
-        ..p.settings.clone()
-    };
-    let cfg = config(
-        server,
-        &tun_settings,
-        &p.rules,
-        2080,
-        2081,
-        &uuid::Uuid::new_v4().to_string(),
-    )?;
-    write_private(&path, &serde_json::to_string_pretty(&cfg).unwrap())
 }
 fn main() {
     let strings: serde_json::Value =
@@ -1199,10 +1146,10 @@ fn main() {
             add_subscription,
             update_subscription,
             delete_subscription,
-            import_file,
-            export_backup,
-            import_backup,
-            export_config
+            file_actions::import_file,
+            file_actions::export_backup,
+            file_actions::import_backup,
+            file_actions::export_config
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|_| panic!("{}", smart_vpn_engine::text("message_345")))

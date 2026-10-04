@@ -58,6 +58,12 @@ mod daemon {
     fn message(key: &str) -> String {
         smart_vpn_engine::text(key).into()
     }
+    fn safe_logs(logs: &std::sync::Mutex<Vec<String>>) -> Vec<String> {
+        logs.lock()
+            .ok()
+            .map(|logs| logs.clone())
+            .unwrap_or_default()
+    }
     fn fixed_command(program: &str, args: &[&str]) -> Result<std::process::Output, String> {
         let out = Command::new(program)
             .args(args)
@@ -84,7 +90,7 @@ mod daemon {
             child
                 .stdin
                 .take()
-                .unwrap()
+                .ok_or_else(|| message("kill_error"))?
                 .write_all(body.as_bytes())
                 .map_err(|_| message("kill_error"))?;
         }
@@ -432,7 +438,7 @@ mod daemon {
         if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(message("helper_invalid"));
         }
-        let expected = std::ffi::CString::new(hash).unwrap();
+        let expected = std::ffi::CString::new(hash).map_err(|_| message("helper_invalid"))?;
         let owner: u32 = fs::read_to_string(base.join("client.uid"))
             .map_err(|_| message("helper_owner"))?
             .parse()
@@ -498,7 +504,7 @@ mod daemon {
         let _ = fs::remove_file(ipc::SOCKET);
         let listener =
             UnixListener::bind(ipc::SOCKET).map_err(|_| message("helper_system_error"))?;
-        let socket = std::ffi::CString::new(ipc::SOCKET).unwrap();
+        let socket = std::ffi::CString::new(ipc::SOCKET).map_err(|_| message("helper_invalid"))?;
         if unsafe { libc::chown(socket.as_ptr(), owner, 0) } != 0 {
             return Err(message("helper_owner"));
         }
@@ -539,7 +545,7 @@ mod daemon {
                             manager
                                 .core
                                 .as_ref()
-                                .map(|c| c.logs.lock().unwrap().clone())
+                                .map(|c| safe_logs(&c.logs))
                                 .unwrap_or_default(),
                         ),
                         Err(_) => (Some(message("helper_invalid")), vec![]),
@@ -567,6 +573,18 @@ mod daemon {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn a_poisoned_log_buffer_cannot_panic_the_root_daemon() {
+            let logs = std::sync::Arc::new(std::sync::Mutex::new(vec!["diagnostic".into()]));
+            let other = logs.clone();
+            assert!(std::thread::spawn(move || {
+                let _lock = other.lock().unwrap();
+                panic!("simulate log writer failure");
+            })
+            .join()
+            .is_err());
+            assert!(safe_logs(&logs).is_empty());
+        }
         #[test]
         fn socket_authentication_requires_the_kernel_uid_and_exact_signature() {
             use std::os::unix::net::UnixStream;

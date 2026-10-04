@@ -137,7 +137,8 @@ pub async fn update_state(
     });
     let current = app.package_info().version.to_string();
     let pending = prefs.pending_version.as_deref() == Some(&current);
-    let ready = if pending {
+    let migration = pending || smart_vpn_engine::network_helper::installed();
+    let ready = if migration {
         tauri::async_runtime::spawn_blocking(|| smart_vpn_engine::network_helper::ready())
             .await
             .unwrap_or(false)
@@ -153,7 +154,7 @@ pub async fn update_state(
         current,
         auto_check: prefs.auto_check,
         skipped_version: prefs.skipped_version,
-        helper_required: pending && !ready,
+        helper_required: migration && !ready,
         error,
     })
 }

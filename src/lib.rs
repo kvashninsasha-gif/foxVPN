@@ -18,3 +18,4 @@ pub fn text(key: &str) -> &'static str {
 }
 
 pub mod network_helper;
+pub mod user_files;

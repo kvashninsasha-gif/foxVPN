@@ -2,8 +2,50 @@ use base64::{
     engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
     Engine,
 };
-use std::{io::Read, time::Duration};
-use url::Url;
+use std::{
+    io::Read,
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    time::{Duration, Instant},
+};
+use url::{Host, Url};
+/// Conservative public Internet policy. Special-purpose blocks are excluded,
+/// including mapped/transition IPv6, even when some subranges are global.
+pub fn public_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || a >= 224
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2))))
+                || (a == 192
+                    && ((b == 31 && c == 196)
+                        || (b == 52 && c == 193)
+                        || (b == 88 && c == 99)
+                        || (b == 175 && c == 48)))
+                || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
+                || (a == 203 && b == 0 && c == 113))
+        }
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            s[0] & 0xe000 == 0x2000
+                && !(s[0] == 0x2001 && (s[1] < 0x200 || s[1] == 0xdb8))
+                && s[0] != 0x2002
+                && !(s[0] == 0x3fff && s[1] < 0x1000)
+                && !(s[0] == 0x2620 && s[1] == 0x4f && s[2] == 0x8000)
+        }
+    }
+}
+pub fn checked_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
+    if addresses.is_empty() || addresses.iter().any(|a| !public_address(a.ip())) {
+        return Err(crate::text("subscription_public_only").into());
+    }
+    Ok(addresses)
+}
 pub fn validate_url(raw: &str) -> Result<(), String> {
     let u = Url::parse(raw).map_err(|_| crate::text("message_239"))?;
     if u.scheme() != "https"
@@ -12,6 +54,25 @@ pub fn validate_url(raw: &str) -> Result<(), String> {
         || u.password().is_some()
     {
         return Err(crate::text("message_240").into());
+    }
+    match u.host() {
+        Some(Host::Ipv4(ip)) if !public_address(ip.into()) => {
+            return Err(crate::text("subscription_public_only").into())
+        }
+        Some(Host::Ipv6(ip)) if !public_address(ip.into()) => {
+            return Err(crate::text("subscription_public_only").into())
+        }
+        Some(Host::Domain(host)) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            if host == "localhost"
+                || host.ends_with(".localhost")
+                || host.ends_with(".local")
+                || host.ends_with(".home.arpa")
+            {
+                return Err(crate::text("subscription_public_only").into());
+            }
+        }
+        _ => (),
     }
     Ok(())
 }
@@ -32,25 +93,62 @@ pub fn decode(text: &str) -> Result<String, String> {
     Err(crate::text("message_241").into())
 }
 pub fn fetch(raw: &str) -> Result<String, String> {
-    validate_url(raw)?;
-    let c = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(25))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 3 || attempt.url().scheme() != "https" {
-                attempt.stop()
-            } else {
-                attempt.follow()
+    let mut url = Url::parse(raw).map_err(|_| crate::text("message_239"))?;
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut response = None;
+    // Each redirect gets a fresh resolution, public-address validation and a
+    // pinned connection. reqwest never performs a second, unvalidated lookup.
+    for hop in 0..=3 {
+        validate_url(url.as_str())?;
+        let host = url
+            .host_str()
+            .ok_or(crate::text("message_240"))?
+            .trim_matches(['[', ']']);
+        let port = url
+            .port_or_known_default()
+            .ok_or(crate::text("message_240"))?;
+        let addresses = checked_addresses(
+            (host, port)
+                .to_socket_addrs()
+                .map_err(|_| crate::text("message_243"))?
+                .collect(),
+        )?;
+        let timeout = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or(crate::text("message_243"))?;
+        let c = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .https_only(true)
+            .timeout(timeout)
+            .resolve_to_addrs(host, &addresses)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| crate::text("message_242"))?;
+        let next = c
+            .get(url.clone())
+            .send()
+            .map_err(|_| crate::text("message_243"))?
+            .error_for_status()
+            .map_err(|_| crate::text("message_244"))?;
+        if next.status().is_redirection() {
+            if hop == 3 {
+                return Err(crate::text("subscription_redirect_error").into());
             }
-        }))
-        .build()
-        .map_err(|_| crate::text("message_242"))?;
-    let response = c
-        .get(raw)
-        .send()
-        .map_err(|_| crate::text("message_243"))?
-        .error_for_status()
-        .map_err(|_| crate::text("message_244"))?;
+            let target = next
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|h| h.to_str().ok())
+                .ok_or(crate::text("subscription_redirect_error"))?;
+            url = url
+                .join(target)
+                .map_err(|_| crate::text("subscription_redirect_error"))?;
+        } else {
+            response = Some(next);
+            break;
+        }
+    }
+    let response = response.ok_or(crate::text("subscription_redirect_error"))?;
     let mut data = Vec::new();
     response
         .take(4_000_001)
