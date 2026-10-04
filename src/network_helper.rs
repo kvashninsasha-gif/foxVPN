@@ -1,5 +1,5 @@
 //! Typed, bounded IPC. The root daemon authenticates the client's macOS audit
-//! token against the CDHash installed by the user-approved package.
+//! token against the UID and CDHash installed by the user-approved package.
 use crate::{routing::Rule, servers::Server, settings::Settings};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
@@ -24,7 +24,12 @@ pub enum Request {
     TestRecovery,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Status {
+    pub protocol: u32,
+    pub helper_version: String,
+    pub core_alive: bool,
+    pub dns_active: bool,
     pub running: bool,
     pub wanted: bool,
     pub proxy_port: u16,
@@ -33,6 +38,51 @@ pub struct Status {
     pub error: Option<String>,
     pub kill_switch: bool,
     pub interface: String,
+}
+pub const PROTOCOL: u32 = 2;
+impl Status {
+    pub fn compatible(&self) -> bool {
+        self.protocol == PROTOCOL && self.helper_version == env!("CARGO_PKG_VERSION")
+    }
+    pub fn stopped(&self) -> bool {
+        self.compatible()
+            && !self.running
+            && !self.core_alive
+            && !self.wanted
+            && !self.kill_switch
+            && !self.dns_active
+    }
+    pub fn connection_state(&self) -> &'static str {
+        if !self.compatible() {
+            "unknown"
+        } else if self.running {
+            "connected"
+        } else if self.wanted {
+            "reconnecting"
+        } else if self.stopped() {
+            "disconnected"
+        } else {
+            "unknown"
+        }
+    }
+}
+pub fn ready() -> bool {
+    request(&Request::Status).is_ok_and(|r| r.status.compatible())
+}
+pub fn require_current() -> Result<Status, String> {
+    let status = request(&Request::Status)?.status;
+    if !status.compatible() {
+        return Err(crate::text("helper_upgrade").into());
+    }
+    Ok(status)
+}
+pub fn installed() -> bool {
+    cfg!(target_os = "macos")
+        && std::path::Path::new("/Library/PrivilegedHelperTools/ru.smartvpn.router.network")
+            .exists()
+}
+pub fn valid_owner(uid: u32) -> bool {
+    uid >= 501 && uid != CORE_UID && uid != u32::MAX && uid != 65534
 }
 #[derive(Serialize, Deserialize)]
 pub struct Response {
@@ -128,6 +178,12 @@ pub fn create_installer(resources: &std::path::Path) -> Result<std::path::PathBu
     )
     .map_err(|_| crate::text("helper_package"))?;
     fs::write(network.join("client.cdhash"), self_hash()?)
+        .map_err(|_| crate::text("helper_package"))?;
+    let uid = unsafe { libc::getuid() };
+    if !valid_owner(uid) || unsafe { libc::geteuid() } != uid {
+        return Err(crate::text("helper_owner").into());
+    }
+    fs::write(network.join("client.uid"), uid.to_string())
         .map_err(|_| crate::text("helper_package"))?;
     fs::write(
         daemons.join("ru.smartvpn.router.network.plist"),

@@ -107,10 +107,7 @@ fn snapshot(s: tauri::State<State>) -> Snapshot {
         )
     };
     let profile = s.profile.lock().unwrap().clone();
-    let helper_available = smart_vpn_engine::network_helper::request(
-        &smart_vpn_engine::network_helper::Request::Status,
-    )
-    .is_ok();
+    let helper_available = smart_vpn_engine::network_helper::ready();
     Snapshot {
         connection_plan: smart_vpn_engine::settings::connection_plan_with_helper(
             &profile,
@@ -147,15 +144,11 @@ async fn runtime(
             ) {
                 Ok(response) => {
                     connection_error = response.status.error.clone();
-                    *s.status.lock().unwrap() = if response.status.running {
-                        "connected"
-                    } else if response.status.wanted || response.status.kill_switch {
-                        "reconnecting"
-                    } else {
-                        "disconnected"
+                    if !response.status.compatible() {
+                        connection_error = Some(smart_vpn_engine::text("helper_upgrade").into());
                     }
-                    .into();
-                    if response.status.running {
+                    *s.status.lock().unwrap() = response.status.connection_state().into();
+                    if response.status.running && response.status.compatible() {
                         if let Some(core) = core.as_mut() {
                             core.proxy_port = response.status.proxy_port;
                             core.api_port = response.status.api_port;
@@ -163,17 +156,22 @@ async fn runtime(
                         } else {
                             *core = Some(ActiveCore::remote(response.status));
                         }
+                    } else if response.status.stopped()
+                        && core.as_ref().is_some_and(|c| c.local.is_none())
+                    {
+                        *core = None;
                     }
                 }
                 Err(error) => {
                     connection_error = Some(error);
-                    *s.status.lock().unwrap() =
-                        if s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
-                            "reconnecting"
-                        } else {
-                            "disconnected"
-                        }
-                        .into();
+                    *s.status.lock().unwrap() = if smart_vpn_engine::network_helper::installed()
+                        || core.as_ref().is_some_and(|c| c.local.is_none())
+                    {
+                        "unknown"
+                    } else {
+                        "disconnected"
+                    }
+                    .into();
                 }
             }
             if include_logs {
@@ -324,22 +322,41 @@ fn check_route(domain: String, s: tauri::State<State>) -> Result<routing::Decisi
 }
 fn disconnect(s: &State) -> Result<(), String> {
     s.wanted.store(false, std::sync::atomic::Ordering::SeqCst);
-    let tun = s.profile.lock().unwrap().settings.tun;
+    let _guard = s.gate.lock().unwrap();
     let active_remote = s
         .core
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|c| c.local.is_none())
-        || (tun && s.status.lock().unwrap().as_str() != "disconnected");
-    stop_core(s);
-    match smart_vpn_engine::network_helper::request(
-        &smart_vpn_engine::network_helper::Request::Stop,
-    ) {
-        Ok(_) => Ok(()),
-        Err(error) if active_remote => Err(error),
-        Err(_) => Ok(()),
+        .is_some_and(|c| c.local.is_none());
+    let result = (|| {
+        if let Some(local) = s
+            .core
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|c| c.local.as_mut())
+        {
+            local.stop_checked()?;
+        }
+        if active_remote || smart_vpn_engine::network_helper::installed() {
+            smart_vpn_engine::network_helper::require_current()?;
+            let response = smart_vpn_engine::network_helper::request(
+                &smart_vpn_engine::network_helper::Request::Stop,
+            )?;
+            if !response.status.stopped() {
+                return Err(smart_vpn_engine::text("helper_stop_unconfirmed").into());
+            }
+        }
+        Ok(())
+    })();
+    if result.is_ok() {
+        *s.core.lock().unwrap() = None;
+        *s.status.lock().unwrap() = "disconnected".into();
+    } else {
+        *s.status.lock().unwrap() = "unknown".into();
     }
+    result
 }
 
 fn stop_core(s: &State) {
@@ -376,6 +393,7 @@ fn connect_impl(s: &State) -> Result<u16, String> {
     *s.status.lock().unwrap() = "connecting".into();
     let result = (|| {
         let core = if p.settings.tun {
+            smart_vpn_engine::network_helper::require_current()?;
             let response = smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Start(Box::new(
                     smart_vpn_engine::network_helper::StartRequest {
@@ -416,7 +434,11 @@ fn connect_impl(s: &State) -> Result<u16, String> {
     *s.status.lock().unwrap() = if result.is_ok() {
         "connected"
     } else {
-        "disconnected"
+        if p.settings.tun && smart_vpn_engine::network_helper::installed() {
+            "unknown"
+        } else {
+            "disconnected"
+        }
     }
     .into();
     result
@@ -469,7 +491,7 @@ async fn test_recovery() -> Result<(), String> {
 }
 #[tauri::command]
 fn prepare_tun(s: tauri::State<State>) -> Result<(), String> {
-    smart_vpn_engine::network_helper::request(&smart_vpn_engine::network_helper::Request::Status)?;
+    smart_vpn_engine::network_helper::require_current()?;
     edit(&s, |profile| {
         if s.core.lock().unwrap().is_some() {
             return Err(smart_vpn_engine::text("disconnect_first").into());
@@ -835,13 +857,17 @@ fn main() {
             if let Ok(response) = smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Status,
             ) {
-                if response.status.wanted && response.status.running {
+                *state.status.lock().unwrap() = response.status.connection_state().into();
+                if response.status.wanted && response.status.running && response.status.compatible()
+                {
                     *state.core.lock().unwrap() = Some(ActiveCore::remote(response.status));
                     *state.status.lock().unwrap() = "connected".into();
                     state
                         .wanted
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                 }
+            } else if smart_vpn_engine::network_helper::installed() && profile.settings.tun {
+                *state.status.lock().unwrap() = "unknown".into();
             }
             app.manage(state.clone());
             let show = MenuItem::with_id(app, "show", t("open_app"), true, None::<&str>)?;
@@ -921,6 +947,13 @@ fn main() {
                             });
                         }
                         "quit" => {
+                            if state.installing.load(std::sync::atomic::Ordering::SeqCst) {
+                                if let Some(w) = app.get_webview_window("main") {
+                                    let _ = w.show();
+                                    let _ = w.set_focus();
+                                }
+                                return;
+                            }
                             if let Err(error) = disconnect(&state) {
                                 let _ = app.emit("operation-error", error);
                             } else {
@@ -943,10 +976,7 @@ fn main() {
             app.set_menu(Menu::with_items(app, &[&app_menu])?)?;
             let startup_plan = smart_vpn_engine::settings::connection_plan_with_helper(
                 &profile,
-                smart_vpn_engine::network_helper::request(
-                    &smart_vpn_engine::network_helper::Request::Status,
-                )
-                .is_ok(),
+                smart_vpn_engine::network_helper::ready(),
             );
             if profile.settings.start_minimized
                 && !(profile.settings.auto_connect && startup_plan != ConnectionPlan::Ready)
@@ -1095,11 +1125,29 @@ fn main() {
                 }
             }
             "hide" => {
+                if app
+                    .state::<State>()
+                    .installing
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    return;
+                }
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
             }
             "exit-app" => {
+                if app
+                    .state::<State>()
+                    .installing
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    return;
+                }
                 if let Err(error) = disconnect(&app.state::<State>()) {
                     let _ = app.emit("operation-error", error);
                 } else {
@@ -1111,7 +1159,13 @@ fn main() {
         .on_window_event(|window, e| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = e {
                 api.prevent_close();
-                let _ = window.hide();
+                if !window
+                    .state::<State>()
+                    .installing
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1150,6 +1204,41 @@ fn main() {
             import_backup,
             export_config
         ])
-        .run(tauri::generate_context!())
-        .unwrap_or_else(|_| panic!("{}", smart_vpn_engine::text("message_345")));
+        .build(tauri::generate_context!())
+        .unwrap_or_else(|_| panic!("{}", smart_vpn_engine::text("message_345")))
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                let installing = app
+                    .state::<State>()
+                    .installing
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                if !updates::exit_allowed(installing, code) {
+                    api.prevent_exit();
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                } else if code.is_none() {
+                    // Dock/system Quit also requires a positive VPN stop. The
+                    // confirmed app.exit(0) below is allowed on the second event.
+                    api.prevent_exit();
+                    let state = app.state::<State>().inner().clone();
+                    state
+                        .wanted
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        if let Err(error) = disconnect(&state) {
+                            let _ = handle.emit("operation-error", error);
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        } else {
+                            handle.exit(0);
+                        }
+                    });
+                }
+            }
+        });
 }

@@ -2,7 +2,7 @@
 set -eu
 /usr/sbin/chown -R root:wheel '/Library/PrivilegedHelperTools/foxVPN'
 /bin/chmod 755 '/Library/PrivilegedHelperTools/foxVPN'
-/bin/chmod 644 '/Library/PrivilegedHelperTools/foxVPN/client.cdhash' '/Library/PrivilegedHelperTools/foxVPN/network-version.json'
+/bin/chmod 644 '/Library/PrivilegedHelperTools/foxVPN/client.cdhash' '/Library/PrivilegedHelperTools/foxVPN/client.uid' '/Library/PrivilegedHelperTools/foxVPN/network-version.json'
 /usr/sbin/chown root:wheel /Library/PrivilegedHelperTools/ru.smartvpn.router.network /Library/LaunchDaemons/ru.smartvpn.router.network.plist
 /bin/chmod 755 /Library/PrivilegedHelperTools/ru.smartvpn.router.network '/Library/PrivilegedHelperTools/foxVPN/core'
 /bin/chmod 644 /Library/LaunchDaemons/ru.smartvpn.router.network.plist

@@ -52,8 +52,11 @@ impl AppUpdates {
         if !self.path.exists() {
             return Ok(Preferences::default());
         }
-        let bytes =
-            fs::read(&self.path).map_err(|_| "Не удалось прочитать настройки обновления.")?;
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        fs::File::open(&self.path)
+            .and_then(|file| file.take(8193).read_to_end(&mut bytes))
+            .map_err(|_| "Не удалось прочитать настройки обновления.")?;
         if bytes.len() > 8192 {
             return Err(
                 "Повреждены настройки обновления. Автопроверка отключена до исправления.".into(),
@@ -117,8 +120,15 @@ pub struct Info {
     helper_required: bool,
     error: Option<String>,
 }
+pub fn exit_allowed(installing: bool, code: Option<i32>) -> bool {
+    !installing || code == Some(tauri::RESTART_EXIT_CODE)
+}
 #[tauri::command]
-pub fn update_state(app: tauri::AppHandle, state: tauri::State<AppUpdates>) -> Info {
+pub async fn update_state(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppUpdates>,
+) -> Result<Info, String> {
+    let _busy = state.acquire()?;
     let result = state.read();
     let error = result.as_ref().err().cloned();
     let mut prefs = result.unwrap_or(Preferences {
@@ -128,10 +138,9 @@ pub fn update_state(app: tauri::AppHandle, state: tauri::State<AppUpdates>) -> I
     let current = app.package_info().version.to_string();
     let pending = prefs.pending_version.as_deref() == Some(&current);
     let ready = if pending {
-        smart_vpn_engine::network_helper::request(
-            &smart_vpn_engine::network_helper::Request::Status,
-        )
-        .is_ok()
+        tauri::async_runtime::spawn_blocking(|| smart_vpn_engine::network_helper::ready())
+            .await
+            .unwrap_or(false)
     } else {
         true
     };
@@ -139,14 +148,14 @@ pub fn update_state(app: tauri::AppHandle, state: tauri::State<AppUpdates>) -> I
         prefs.pending_version = None;
         let _ = state.write(&prefs);
     }
-    Info {
+    Ok(Info {
         supported: cfg!(all(target_os = "macos", target_arch = "aarch64")),
         current,
         auto_check: prefs.auto_check,
         skipped_version: prefs.skipped_version,
         helper_required: pending && !ready,
         error,
-    }
+    })
 }
 pub fn pending_helper(app: &tauri::AppHandle, state: &AppUpdates) -> bool {
     state.read().is_ok_and(|p| {
@@ -299,6 +308,7 @@ pub async fn install_app_update(
         *updates.cancel.lock().unwrap() = Some(signal.clone());
         let mut downloaded = 0u64;
         let mut emitted = 0u64;
+        let oversized = AtomicBool::new(false);
         let _ = app.emit(
             "app-update-progress",
             Progress {
@@ -311,6 +321,7 @@ pub async fn install_app_update(
             |chunk, total| {
                 downloaded = downloaded.saturating_add(chunk as u64);
                 if downloaded > 256 * 1024 * 1024 || total.is_some_and(|s| s > 256 * 1024 * 1024) {
+                    oversized.store(true, Ordering::SeqCst);
                     signal.notify_one();
                 }
                 if downloaded - emitted >= 256 * 1024 {
@@ -327,7 +338,11 @@ pub async fn install_app_update(
             },
             || {},
         );
-        let bytes = tokio::select! { biased; _=signal.notified()=>return Err("Скачивание отменено или превышен допустимый размер. Приложение и VPN не менялись.".into()), result=download=>result.map_err(|_| "Не удалось скачать обновление или проверить его цифровую подпись. Приложение и VPN не менялись.")? };
+        let bytes = tokio::select! { biased; _=signal.notified()=>return Err(if oversized.load(Ordering::SeqCst) {
+            "Обновление превышает допустимый размер 256 МБ. Приложение и VPN не менялись."
+        } else {
+            "Скачивание отменено. Приложение и VPN не менялись."
+        }.into()), result=download=>result.map_err(|_| "Не удалось скачать обновление или проверить его цифровую подпись. Приложение и VPN не менялись.")? };
         if bytes.len() > 256 * 1024 * 1024 {
             return Err("Обновление превышает допустимый размер.".into());
         }
@@ -359,6 +374,7 @@ pub async fn install_app_update(
         };
         next.skipped_version = None;
         updates.write(&next)?;
+        vpn.installing.store(true, Ordering::SeqCst);
         let _ = app.emit(
             "app-update-progress",
             Progress {
@@ -369,7 +385,6 @@ pub async fn install_app_update(
         );
         let state = vpn.inner().clone();
         let result = tauri::async_runtime::spawn_blocking(move || {
-            state.installing.store(true, Ordering::SeqCst);
             let result = (|| {
                 state.vault.save(&state.profile.lock().unwrap())?;
                 crate::disconnect(&state)?;
@@ -445,6 +460,22 @@ mod tests {
         assert!(state.acquire().is_err());
         drop(first);
         assert!(state.acquire().is_ok());
+    }
+    #[test]
+    fn critical_install_blocks_quit_but_allows_approved_restart() {
+        assert!(!exit_allowed(true, None));
+        assert!(!exit_allowed(true, Some(0)));
+        assert!(exit_allowed(true, Some(tauri::RESTART_EXIT_CODE)));
+        assert!(exit_allowed(false, None));
+        assert!(exit_allowed(false, Some(0)));
+    }
+    #[test]
+    fn oversized_preferences_remain_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let state = state(root.path().join("updates.json"));
+        fs::write(&state.path, vec![b' '; 16384]).unwrap();
+        assert!(state.read().is_err());
+        assert_eq!(fs::metadata(&state.path).unwrap().len(), 16384);
     }
     #[test]
     fn iphone_foreign_and_downgrade_channel_urls_rejected() {

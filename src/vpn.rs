@@ -335,6 +335,10 @@ impl CoreProcess {
         matches!(self.child.try_wait(), Ok(None))
     }
     pub fn stop(&mut self) {
+        let _ = self.stop_checked();
+    }
+    /// A stop acknowledgement requires reaping the actual child process.
+    pub fn stop_checked(&mut self) -> Result<(), String> {
         #[cfg(unix)]
         if matches!(self.child.try_wait(), Ok(None)) {
             unsafe {
@@ -347,9 +351,20 @@ impl CoreProcess {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        match self.child.try_wait() {
+            Ok(Some(_)) => (),
+            Ok(None) => {
+                self.child
+                    .kill()
+                    .map_err(|_| crate::text("helper_stop_unconfirmed"))?;
+                self.child
+                    .wait()
+                    .map_err(|_| crate::text("helper_stop_unconfirmed"))?;
+            }
+            Err(_) => return Err(crate::text("helper_stop_unconfirmed").into()),
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
+        Ok(())
     }
 }
 impl Drop for CoreProcess {

@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <bsm/audit.h>
+#include <bsm/libbsm.h>
 #include <stdatomic.h>
 
 static int hashForCode(SecCodeRef code, char *out) {
@@ -20,10 +21,12 @@ int fox_self_hash(char *out) {
  if (SecCodeCopySelf(kSecCSDefaultFlags,&code)!=errSecSuccess) return 0;
  int result=hashForCode(code,out); CFRelease(code); return result; }
 }
-int fox_verify_socket(int fd, const char *expected) {
+int fox_verify_socket(int fd, const char *expected, unsigned int owner) {
  @autoreleasepool {
  audit_token_t token; socklen_t size=sizeof(token);
  if (getsockopt(fd,SOL_LOCAL,LOCAL_PEERTOKEN,&token,&size) || size!=sizeof(token)) return 0;
+ // Credentials come from the kernel, never from JSON or the calling process.
+ if (audit_token_to_euid(token)!=owner || audit_token_to_ruid(token)!=owner) return 0;
  NSData *data=[NSData dataWithBytes:&token length:size];
  NSDictionary *attributes=@{(__bridge id)kSecGuestAttributeAudit:data};
  SecCodeRef code=NULL;
@@ -33,12 +36,24 @@ int fox_verify_socket(int fd, const char *expected) {
  CFRelease(code); return ok; }
 }
 static SCDynamicStoreRef dnsStore=NULL;
+static int openDNSStore(void) {
+ if (!dnsStore) dnsStore=SCDynamicStoreCreate(NULL,CFSTR("foxVPN DNS"),NULL,NULL);
+ return dnsStore!=NULL;
+}
+int fox_dns_active(void) {
+ if (!openDNSStore()) return 1; // Unknown state must prevent a stopped acknowledgement.
+ CFPropertyListRef value=SCDynamicStoreCopyValue(dnsStore,CFSTR("State:/Network/Service/foxVPN/DNS"));
+ if(value) { CFRelease(value); return 1; }
+ return SCError()==kSCStatusNoKey ? 0 : 1;
+}
 int fox_dns(int enabled) {
  @autoreleasepool {
- if (!dnsStore) dnsStore=SCDynamicStoreCreate(NULL,CFSTR("foxVPN DNS"),NULL,NULL);
- if (!dnsStore) return 0;
+ if (!openDNSStore()) return 0;
  CFStringRef key=CFSTR("State:/Network/Service/foxVPN/DNS");
- if (!enabled) { SCDynamicStoreRemoveValue(dnsStore,key); return 1; }
+ if (!enabled) {
+   if (!SCDynamicStoreRemoveValue(dnsStore,key) && SCError()!=kSCStatusNoKey) return 0;
+   return fox_dns_active()==0;
+ }
  NSDictionary *dns=@{@"ServerAddresses":@[@"172.29.0.2",@"fdfe:dcba:9876::2"],@"SupplementalMatchDomains":@[@""],@"SupplementalMatchOrders":@[@1]};
  return SCDynamicStoreSetValue(dnsStore,key,(__bridge CFDictionaryRef)dns); }
 }

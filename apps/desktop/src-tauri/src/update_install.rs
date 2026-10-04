@@ -1,5 +1,5 @@
 //! Install only verified updater bytes. Stage beside the app so all renames stay
-//! on the same filesystem; retain the previous app and roll back on move failure.
+//! on the same filesystem; atomically exchange bundles and retain the previous app.
 use flate2::read::GzDecoder;
 use std::{
     fs,
@@ -113,23 +113,57 @@ impl Prepared {
         let backup = self
             .target
             .with_file_name(format!(".foxVPN-previous-{}.app", uuid::Uuid::new_v4()));
-        replace(&self.target, &self.stage.path().join("foxVPN.app"), &backup)?;
-        Ok(backup)
+        // Keep before the exchange: even termination between swap and backup rename
+        // must not cause TempDir's destructor to delete the previous application.
+        let stage = self.stage.keep();
+        let result = replace(&self.target, &stage.join("foxVPN.app"), &backup);
+        match &result {
+            Err(_) => {
+                let _ = fs::remove_dir_all(&stage);
+            }
+            Ok(path) if path == &backup => {
+                let _ = fs::remove_dir(&stage);
+            }
+            _ => (), // Backup rename failed: retain the old app inside staging.
+        }
+        result
     }
 }
-fn replace(target: &Path, new: &Path, backup: &Path) -> Result<(), String> {
-    fs::rename(target, backup)
-        .map_err(|_| "Не удалось сохранить прежнюю копию приложения. Обновление не установлено.")?;
-    if fs::rename(new, target).is_err() {
-        return match fs::rename(backup, target) {
-            Ok(()) => Err("Установка не завершена; прежняя копия приложения восстановлена.".into()),
-            Err(_) => Err(format!(
-                "Установка не завершена. Прежняя копия сохранена: {}",
-                backup.display()
-            )),
-        };
+fn rename_native(from: &Path, to: &Path, flags: u32) -> std::io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    unsafe extern "C" {
+        fn renamex_np(
+            from: *const std::ffi::c_char,
+            to: *const std::ffi::c_char,
+            flags: u32,
+        ) -> i32;
     }
-    Ok(())
+    let from = CString::new(from.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
+    let to = CString::new(to.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
+    // SDK sys/stdio.h: RENAME_SWAP=2, RENAME_EXCL=4. Both paths remain alive.
+    if unsafe { renamex_np(from.as_ptr(), to.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+fn replace(target: &Path, new: &Path, backup: &Path) -> Result<PathBuf, String> {
+    for path in [target, new] {
+        if !fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir()) {
+            return Err(
+                "Не найдено приложение или каталог заменён ссылкой. Обновление не установлено."
+                    .into(),
+            );
+        }
+    }
+    // No two-rename fallback: a crash must never leave the installed path absent.
+    rename_native(new, target, 2).map_err(|_| "Не удалось атомарно заменить приложение. Прежняя копия остаётся на месте; проверьте права и файловую систему.".to_string())?;
+    if rename_native(new, backup, 4).is_ok() {
+        Ok(backup.to_owned())
+    } else {
+        // Installation succeeded. Keep the old bundle at its current location.
+        Ok(new.to_owned())
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -150,7 +184,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn replacement_failure_restores_old_app() {
+    fn failed_exchange_keeps_old_app_in_place() {
         let root = tempfile::tempdir().unwrap();
         let app = root.path().join("foxVPN.app");
         let backup = root.path().join("old.app");
@@ -175,6 +209,38 @@ mod tests {
         assert_eq!(fs::read_to_string(backup.join("version")).unwrap(), "old");
     }
     #[test]
+    fn failed_backup_move_keeps_both_apps_and_never_overwrites_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("foxVPN.app");
+        let new = root.path().join("new.app");
+        let backup = root.path().join("existing.app");
+        for (path, text) in [(&app, "old"), (&new, "new"), (&backup, "unrelated")] {
+            fs::create_dir(path).unwrap();
+            fs::write(path.join("version"), text).unwrap();
+        }
+        assert_eq!(replace(&app, &new, &backup).unwrap(), new);
+        assert_eq!(fs::read_to_string(app.join("version")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(new.join("version")).unwrap(), "old");
+        assert_eq!(
+            fs::read_to_string(backup.join("version")).unwrap(),
+            "unrelated"
+        );
+    }
+    #[test]
+    fn symlink_target_is_rejected_without_modifying_other_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("foxVPN.app");
+        let other = root.path().join("other.app");
+        let new = root.path().join("new.app");
+        fs::create_dir(&other).unwrap();
+        fs::create_dir(&new).unwrap();
+        fs::write(other.join("original"), "kept").unwrap();
+        std::os::unix::fs::symlink(&other, &app).unwrap();
+        assert!(replace(&app, &new, &root.path().join("backup.app")).is_err());
+        assert!(fs::symlink_metadata(&app).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(other.join("original")).unwrap(), "kept");
+    }
+    #[test]
     fn wrong_archive_never_replaces_app() {
         let root = tempfile::tempdir().unwrap();
         let app = root.path().join("foxVPN.app");
@@ -190,6 +256,11 @@ mod artifact_test {
     use super::*;
     use std::io::{Read, Write};
     use tauri_plugin_updater::UpdaterExt;
+    fn artifact_version() -> String {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        config["version"].as_str().unwrap().to_owned()
+    }
     #[tokio::test]
     #[ignore = "Run explicitly after publishing release and HTTPS feed"]
     async fn live_github_release_download_verifies_signature() {
@@ -200,7 +271,7 @@ mod artifact_test {
         let config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.macos.conf.json")).unwrap();
         let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-        context.package_info_mut().version = "0.1.5".parse().unwrap();
+        context.package_info_mut().version = "0.1.6".parse().unwrap();
         context
             .config_mut()
             .plugins
@@ -216,11 +287,11 @@ mod artifact_test {
             .build()
             .unwrap();
         let mut update = updater.check().await.unwrap().unwrap();
-        assert_eq!(update.version, "0.1.6");
-        assert!(update
-            .download_url
-            .as_str()
-            .ends_with("/v0.1.6/foxVPN-0.1.6-macOS-arm64.app.tar.gz"));
+        assert_eq!(update.version, artifact_version());
+        assert!(update.download_url.as_str().ends_with(&format!(
+            "/v{0}/foxVPN-{0}-macOS-arm64.app.tar.gz",
+            artifact_version()
+        )));
         update.timeout = Some(std::time::Duration::from_secs(180));
         let downloaded = update.download(|_, _| {}, || {}).await.unwrap();
         assert_eq!(downloaded, expected);
@@ -239,6 +310,17 @@ mod artifact_test {
         let target = root.path().join("foxVPN.app");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("old-copy"), b"preserved").unwrap();
+        let previous_version = if let Ok(previous) = std::env::var("FOXVPN_TEST_PREVIOUS_ARTIFACT")
+        {
+            let previous_version = "0.1.6";
+            prepare(&fs::read(previous).unwrap(), &target, previous_version)
+                .unwrap()
+                .commit()
+                .unwrap();
+            Some(previous_version)
+        } else {
+            None
+        };
         for mode in ["valid", "corrupt", "wrong-version", "cancel"] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
@@ -246,10 +328,14 @@ mod artifact_test {
             if mode == "corrupt" {
                 payload[0] ^= 1;
             }
+            let version = artifact_version();
+            let mut wrong = semver::Version::parse(&version).unwrap();
+            wrong.patch += 1;
+            let wrong = wrong.to_string();
             let announced = if mode == "wrong-version" {
-                "0.1.7"
+                &wrong
             } else {
-                "0.1.6"
+                &version
             };
             let manifest=serde_json::json!({"version":announced,"platforms":{"darwin-aarch64":{"url":format!("http://{address}/artifact"),"signature":signature.trim()}}}).to_string();
             let server = std::thread::spawn(move || {
@@ -277,7 +363,7 @@ mod artifact_test {
                 }
             });
             let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-            context.package_info_mut().version = "0.1.5".parse().unwrap();
+            context.package_info_mut().version = "0.1.6".parse().unwrap();
             context
                 .config_mut()
                 .plugins
@@ -295,7 +381,7 @@ mod artifact_test {
                 .build()
                 .unwrap();
             let update = updater.check().await.unwrap().unwrap();
-            assert_eq!(update.current_version, "0.1.5");
+            assert_eq!(update.current_version, "0.1.6");
             if mode == "cancel" {
                 let mut future = Box::pin(update.download(|_, _| {}, || {}));
                 tokio::select! { _=tokio::time::sleep(std::time::Duration::from_millis(50))=>{}, result=&mut future=>panic!("unexpected early completion {result:?}") }
@@ -306,12 +392,36 @@ mod artifact_test {
                 if mode == "valid" {
                     let downloaded = result.unwrap();
                     assert_eq!(downloaded, bytes);
-                    let prepared = prepare(&downloaded, &target, "0.1.6").unwrap();
-                    assert!(target.join("old-copy").exists());
+                    let prepared = prepare(&downloaded, &target, &version).unwrap();
+                    if let Some(previous) = previous_version {
+                        let info =
+                            plist::Value::from_file(target.join("Contents/Info.plist")).unwrap();
+                        assert_eq!(
+                            info.as_dictionary().unwrap()["CFBundleShortVersionString"].as_string(),
+                            Some(previous)
+                        );
+                    } else {
+                        assert!(target.join("old-copy").exists());
+                    }
                     let backup = prepared.commit().unwrap();
                     assert!(target.join("Contents/MacOS/smart-vpn-desktop").exists());
-                    assert!(backup.join("old-copy").exists());
-                    assert!(prepare(&downloaded, &target, "0.1.7").is_err());
+                    if let Some(previous) = previous_version {
+                        let info =
+                            plist::Value::from_file(backup.join("Contents/Info.plist")).unwrap();
+                        assert_eq!(
+                            info.as_dictionary().unwrap()["CFBundleShortVersionString"].as_string(),
+                            Some(previous)
+                        );
+                        assert!(Command::new("/usr/bin/codesign")
+                            .args(["--verify", "--deep", "--strict"])
+                            .arg(&backup)
+                            .status()
+                            .unwrap()
+                            .success());
+                    } else {
+                        assert!(backup.join("old-copy").exists());
+                    }
+                    assert!(prepare(&downloaded, &target, &wrong).is_err());
                 } else {
                     assert!(result.is_err(), "{mode} accepted");
                     assert!(target.join("Contents/MacOS/smart-vpn-desktop").exists());

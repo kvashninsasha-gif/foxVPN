@@ -28,6 +28,7 @@ fn main() {
             .success());
         println!("cargo:rustc-link-search=native={}", out.display());
         println!("cargo:rustc-link-lib=static=fox_platform");
+        println!("cargo:rustc-link-lib=bsm");
         for framework in ["Foundation", "Security", "SystemConfiguration"] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }

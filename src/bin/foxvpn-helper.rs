@@ -27,8 +27,9 @@ mod daemon {
     const ANCHOR: &str = "com.apple/ru.smartvpn.router";
     static SHUTDOWN: AtomicBool = AtomicBool::new(false);
     unsafe extern "C" {
-        fn fox_verify_socket(fd: i32, expected: *const std::ffi::c_char) -> i32;
+        fn fox_verify_socket(fd: i32, expected: *const std::ffi::c_char, owner: u32) -> i32;
         fn fox_dns(enabled: i32) -> i32;
+        fn fox_dns_active() -> i32;
         fn fox_watch_network();
         fn fox_network_epoch() -> u64;
         fn proc_pidpath(pid: i32, buffer: *mut std::ffi::c_void, size: u32) -> i32;
@@ -38,6 +39,8 @@ mod daemon {
     }
     #[derive(Default, Serialize, Deserialize)]
     struct Saved {
+        #[serde(default)]
+        owner_uid: u32,
         wanted: Option<StartRequest>,
         pid: Option<u32>,
         token: Option<String>,
@@ -144,6 +147,10 @@ mod daemon {
         fn status(&mut self) -> Status {
             let running = self.core.as_mut().is_some_and(|c| c.alive());
             let mut s = Status {
+                protocol: ipc::PROTOCOL,
+                helper_version: env!("CARGO_PKG_VERSION").into(),
+                core_alive: running,
+                dns_active: unsafe { fox_dns_active() } != 0,
                 running: running && self.healthy,
                 wanted: self.saved.wanted.is_some(),
                 error: self.error.clone(),
@@ -224,14 +231,22 @@ mod daemon {
         fn stop(&mut self) -> Result<(), String> {
             self.saved.wanted = None;
             self.healthy = false;
+            save(&self.saved)?;
+            if let Some(core) = self.core.as_mut() {
+                core.stop_checked()?;
+            }
             self.core = None;
             self.saved.pid = None;
             save(&self.saved)?;
             let dns_ok = unsafe { fox_dns(0) } == 1;
-            self.release_guard()?;
-            save(&self.saved)?;
+            // Keep the traffic guard if DNS cleanup failed. Retrying Stop is safe.
             if !dns_ok {
                 return Err(message("helper_dns_error"));
+            }
+            self.release_guard()?;
+            save(&self.saved)?;
+            if !self.status().stopped() {
+                return Err(message("helper_stop_unconfirmed"));
             }
             self.error = None;
             let _ = fixed_command("/usr/bin/dscacheutil", &["-flushcache"]);
@@ -390,6 +405,7 @@ mod daemon {
         for path in [
             base.join("core"),
             base.join("client.cdhash"),
+            base.join("client.uid"),
             base.join("network-version.json"),
         ] {
             let m = fs::symlink_metadata(path).map_err(|_| message("helper_invalid"))?;
@@ -417,13 +433,20 @@ mod daemon {
             return Err(message("helper_invalid"));
         }
         let expected = std::ffi::CString::new(hash).unwrap();
+        let owner: u32 = fs::read_to_string(base.join("client.uid"))
+            .map_err(|_| message("helper_owner"))?
+            .parse()
+            .map_err(|_| message("helper_owner"))?;
+        if !ipc::valid_owner(owner) || unsafe { libc::getpwuid(owner) }.is_null() {
+            return Err(message("helper_owner"));
+        }
         fs::create_dir_all("/var/run/foxvpn/private")
             .map_err(|_| message("helper_system_error"))?;
         fs::set_permissions("/var/run/foxvpn", fs::Permissions::from_mode(0o755))
             .map_err(|_| message("helper_system_error"))?;
         fs::set_permissions("/var/run/foxvpn/private", fs::Permissions::from_mode(0o700))
             .map_err(|_| message("helper_system_error"))?;
-        let saved: Saved = fs::read("/var/run/foxvpn/private/session.json")
+        let mut saved: Saved = fs::read("/var/run/foxvpn/private/session.json")
             .ok()
             .and_then(|s| serde_json::from_slice(&s).ok())
             .unwrap_or_default();
@@ -431,8 +454,29 @@ mod daemon {
             unsafe {
                 libc::kill(pid as i32, libc::SIGTERM);
             }
-            std::thread::sleep(Duration::from_secs(2));
+            for _ in 0..20 {
+                if !owns_core(pid) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if owns_core(pid) {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+                for _ in 0..20 {
+                    if !owns_core(pid) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if owns_core(pid) {
+                    return Err(message("helper_stop_unconfirmed"));
+                }
+            }
         }
+        let changed_owner = saved.owner_uid != owner;
+        saved.owner_uid = owner;
         let mut manager = Manager {
             core: None,
             saved,
@@ -443,20 +487,29 @@ mod daemon {
             last_health: Instant::now(),
             healthy: false,
         };
+        // An administrator-approved owner change never inherits another user's
+        // server credentials, API secret or reconnecting session.
+        if changed_owner {
+            manager.stop()?;
+        }
         std::thread::spawn(|| unsafe {
             fox_watch_network();
         });
         let _ = fs::remove_file(ipc::SOCKET);
         let listener =
             UnixListener::bind(ipc::SOCKET).map_err(|_| message("helper_system_error"))?;
-        fs::set_permissions(ipc::SOCKET, fs::Permissions::from_mode(0o666))
+        let socket = std::ffi::CString::new(ipc::SOCKET).unwrap();
+        if unsafe { libc::chown(socket.as_ptr(), owner, 0) } != 0 {
+            return Err(message("helper_owner"));
+        }
+        fs::set_permissions(ipc::SOCKET, fs::Permissions::from_mode(0o600))
             .map_err(|_| message("helper_system_error"))?;
         listener
             .set_nonblocking(true)
             .map_err(|_| message("helper_system_error"))?;
         while !SHUTDOWN.load(Ordering::SeqCst) {
             if let Ok((mut stream, _)) = listener.accept() {
-                if unsafe { fox_verify_socket(stream.as_raw_fd(), expected.as_ptr()) } != 1 {
+                if unsafe { fox_verify_socket(stream.as_raw_fd(), expected.as_ptr(), owner) } != 1 {
                     continue;
                 }
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
@@ -514,6 +567,30 @@ mod daemon {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn socket_authentication_requires_the_kernel_uid_and_exact_signature() {
+            use std::os::unix::net::UnixStream;
+            let (client, _peer) = UnixStream::pair().unwrap();
+            let hash = std::ffi::CString::new(ipc::self_hash().unwrap()).unwrap();
+            let owner = unsafe { libc::getuid() };
+            assert_eq!(
+                unsafe { fox_verify_socket(client.as_raw_fd(), hash.as_ptr(), owner) },
+                1
+            );
+            assert_eq!(
+                unsafe { fox_verify_socket(client.as_raw_fd(), hash.as_ptr(), owner + 1) },
+                0
+            );
+            assert_eq!(
+                unsafe { fox_verify_socket(client.as_raw_fd(), hash.as_ptr(), 0) },
+                0
+            );
+            let wrong = std::ffi::CString::new("0000000000000000000000000000000000000000").unwrap();
+            assert_eq!(
+                unsafe { fox_verify_socket(client.as_raw_fd(), wrong.as_ptr(), owner) },
+                0
+            );
+        }
         #[test]
         fn guard_uses_a_dedicated_core_identity_and_blocks_both_ip_families() {
             let rules = guard_rules();
