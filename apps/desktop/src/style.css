@@ -4,3 +4,5 @@
 
 /* foxVPN: a warm fox emblem with a restrained navy wordmark. */
 .brand-icon{width:46px;height:46px;border-radius:14px;flex-shrink:0;box-shadow:0 3px 8px #172a4310}.brand-icon img{width:36px;height:36px;display:block}.brand b{font-size:23px;font-weight:750;letter-spacing:-.9px;color:#172a43}.connection-mark{width:47px;height:47px;display:block}
+
+.update-backdrop{z-index:30}.update-version{font-size:16px;color:#172a43;line-height:1.7}.update-notes{white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fb;border-radius:10px;padding:16px;max-height:220px;overflow:auto;font-size:12px;line-height:1.8;color:#61728a}.update-progress{display:grid;gap:10px;padding:15px 0;color:#61728a;font-size:12px}.update-progress progress{width:100%;accent-color:#b24a1c}.update-dialog .footnote{line-height:1.8}

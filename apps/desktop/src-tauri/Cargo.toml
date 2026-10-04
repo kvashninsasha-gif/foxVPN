@@ -1,6 +1,6 @@
 [package]
 name = "smart-vpn-desktop"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "GPL-3.0-only"
 [build-dependencies]
@@ -14,3 +14,16 @@ smart-vpn-engine = {path="../../.."}
 serde = {version="1",features= ["derive"] }
 serde_json = "1"
 uuid = {version="1",features= ["v4"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-updater = "2"
+tokio = {version="1",features= ["time", "sync", "macros"] }
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
+plist = "1"
+semver = "1"
+futures-util = "0.3"
+
+[dev-dependencies]
+tauri = {version="2", features= ["test"] }

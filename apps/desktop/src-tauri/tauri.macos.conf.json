@@ -5,5 +5,14 @@
       "../../../core/foxvpn-network-core": "network/foxvpn-network-core",
       "../../../core/network-version.json": "network/network-version.json"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlCOEZEMTRENEFGQTE3QjIKUldTeUYvcEtUZEdQbStqQmhWU24yRmdIUTBnYlZqVDA1SzdURXUvMitHbU9ZbS9OMnlqWDcrWVIK",
+      "endpoints": [
+        "https://raw.githubusercontent.com/kvashninsasha-gif/smart-vpn-router/main/updates/macos.json"
+      ],
+      "requireSignedVersion": true
+    }
   }
 }

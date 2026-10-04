@@ -23,3 +23,6 @@ apps/ios/DerivedData/
 apps/ios/Local.xcconfig
 *.xcuserstate
 xcuserdata/
+
+# Local UI verification artifacts
+/output/playwright/

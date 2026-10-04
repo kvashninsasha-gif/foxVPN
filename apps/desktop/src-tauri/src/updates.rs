@@ -1,0 +1,466 @@
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
+use tauri::{Emitter, Manager};
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct Preferences {
+    auto_check: bool,
+    skipped_version: Option<String>,
+    pending_version: Option<String>,
+}
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            skipped_version: None,
+            pending_version: None,
+        }
+    }
+}
+pub struct AppUpdates {
+    path: PathBuf,
+    busy: AtomicBool,
+    #[cfg(target_os = "macos")]
+    offer: Mutex<Option<tauri_plugin_updater::Update>>,
+    #[cfg(target_os = "macos")]
+    cancel: Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
+}
+impl AppUpdates {
+    pub fn new(app: &tauri::AppHandle) -> Result<Self, String> {
+        Ok(Self {
+            path: app
+                .path()
+                .app_config_dir()
+                .map_err(|_| "Не найден каталог настроек обновления.")?
+                .join("updates.json"),
+            busy: AtomicBool::new(false),
+            #[cfg(target_os = "macos")]
+            offer: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            cancel: Mutex::new(None),
+        })
+    }
+    fn read(&self) -> Result<Preferences, String> {
+        if !self.path.exists() {
+            return Ok(Preferences::default());
+        }
+        let bytes =
+            fs::read(&self.path).map_err(|_| "Не удалось прочитать настройки обновления.")?;
+        if bytes.len() > 8192 {
+            return Err(
+                "Повреждены настройки обновления. Автопроверка отключена до исправления.".into(),
+            );
+        }
+        serde_json::from_slice(&bytes).map_err(|_| {
+            "Повреждены настройки обновления. Автопроверка отключена до исправления.".into()
+        })
+    }
+    fn write(&self, value: &Preferences) -> Result<(), String> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or("Нет каталога настроек обновления.")?;
+        fs::create_dir_all(parent)
+            .map_err(|_| "Не удалось создать каталог настроек обновления.")?;
+        let temp = parent.join(format!("updates-{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| {
+            use std::io::Write;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp)?;
+            file.write_all(&serde_json::to_vec(value).map_err(std::io::Error::other)?)?;
+            file.sync_all()?;
+            fs::rename(&temp, &self.path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temp);
+            return Err("Не удалось сохранить настройки обновления.".into());
+        }
+        Ok(())
+    }
+    fn acquire(&self) -> Result<Busy<'_>, String> {
+        self.busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| "Уже выполняется операция обновления.")?;
+        Ok(Busy(self))
+    }
+}
+struct Busy<'a>(&'a AppUpdates);
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            *self.0.cancel.lock().unwrap() = None;
+        }
+        self.0.busy.store(false, Ordering::SeqCst);
+    }
+}
+#[derive(Serialize)]
+pub struct Info {
+    supported: bool,
+    current: String,
+    auto_check: bool,
+    skipped_version: Option<String>,
+    helper_required: bool,
+    error: Option<String>,
+}
+#[tauri::command]
+pub fn update_state(app: tauri::AppHandle, state: tauri::State<AppUpdates>) -> Info {
+    let result = state.read();
+    let error = result.as_ref().err().cloned();
+    let mut prefs = result.unwrap_or(Preferences {
+        auto_check: false,
+        ..Preferences::default()
+    });
+    let current = app.package_info().version.to_string();
+    let pending = prefs.pending_version.as_deref() == Some(&current);
+    let ready = if pending {
+        smart_vpn_engine::network_helper::request(
+            &smart_vpn_engine::network_helper::Request::Status,
+        )
+        .is_ok()
+    } else {
+        true
+    };
+    if pending && ready {
+        prefs.pending_version = None;
+        let _ = state.write(&prefs);
+    }
+    Info {
+        supported: cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        current,
+        auto_check: prefs.auto_check,
+        skipped_version: prefs.skipped_version,
+        helper_required: pending && !ready,
+        error,
+    }
+}
+pub fn pending_helper(app: &tauri::AppHandle, state: &AppUpdates) -> bool {
+    state.read().is_ok_and(|p| {
+        p.pending_version.as_deref() == Some(&app.package_info().version.to_string())
+    })
+}
+#[tauri::command]
+pub fn update_preferences(enabled: bool, state: tauri::State<AppUpdates>) -> Result<(), String> {
+    let _busy = state.acquire()?;
+    let mut prefs = state.read()?;
+    prefs.auto_check = enabled;
+    state.write(&prefs)
+}
+#[derive(Serialize)]
+pub struct Offer {
+    current: String,
+    version: String,
+    notes: String,
+}
+#[tauri::command]
+pub async fn check_app_update(
+    manual: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppUpdates>,
+) -> Result<Option<Offer>, String> {
+    let _busy = state.acquire()?;
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_updater::UpdaterExt;
+        let updater = app
+            .updater_builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|_| "Не удалось настроить проверку обновлений.")?;
+        let result = updater.check().await.map_err(|_| {
+            "Не удалось проверить обновления в GitHub. Проверьте интернет и попробуйте позже."
+        })?;
+        let offer = if let Some(update) = &result {
+            validate_offer(&update.version, update.download_url.as_str())?;
+            Some(Offer {
+                current: update.current_version.clone(),
+                version: update.version.clone(),
+                notes: update
+                    .body
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .take(4000)
+                    .collect(),
+            })
+        } else {
+            None
+        };
+        if offer.as_ref().is_some_and(|v| {
+            manual
+                || state
+                    .read()
+                    .is_ok_and(|p| p.auto_check && p.skipped_version.as_deref() != Some(&v.version))
+        }) {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+        *state.offer.lock().unwrap() = result;
+        Ok(offer)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, manual);
+        Ok(None)
+    }
+}
+#[cfg(target_os = "macos")]
+fn validate_offer(version: &str, url: &str) -> Result<(), String> {
+    let parsed = semver::Version::parse(version).map_err(|_| "Некорректная версия обновления.")?;
+    if !parsed.pre.is_empty() || !parsed.build.is_empty() || url != format!("https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v{version}/foxVPN-{version}-macOS-arm64.app.tar.gz") || !cfg!(target_arch="aarch64") {
+        return Err("Нет подходящего официального обновления для этого Mac.".into());
+    }
+    Ok(())
+}
+#[tauri::command]
+pub fn skip_app_update(version: String, state: tauri::State<AppUpdates>) -> Result<(), String> {
+    let _busy = state.acquire()?;
+    #[cfg(target_os = "macos")]
+    {
+        if !state
+            .offer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|v| v.version == version)
+        {
+            return Err("Сначала проверьте доступную версию.".into());
+        }
+        let mut prefs = state.read()?;
+        prefs.skipped_version = Some(version);
+        state.write(&prefs)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = version;
+        Err("Обновление доступно только на macOS Apple Silicon.".into())
+    }
+}
+#[derive(Clone, Serialize)]
+struct Progress {
+    stage: &'static str,
+    downloaded: u64,
+    total: Option<u64>,
+}
+#[tauri::command]
+pub fn cancel_app_update(state: tauri::State<AppUpdates>) {
+    #[cfg(target_os = "macos")]
+    if let Some(cancel) = state.cancel.lock().unwrap().as_ref() {
+        cancel.notify_one();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = state;
+}
+#[tauri::command]
+pub async fn install_app_update(
+    version: String,
+    approved: bool,
+    app: tauri::AppHandle,
+    updates: tauri::State<'_, AppUpdates>,
+    vpn: tauri::State<'_, crate::State>,
+) -> Result<(), String> {
+    if !approved {
+        return Err("Обновление требует вашего согласия.".into());
+    }
+    let _busy = updates.acquire()?;
+    #[cfg(target_os = "macos")]
+    {
+        let mut update = updates
+            .offer
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("Сначала проверьте обновления.")?;
+        if update.version != version {
+            return Err("Доступная версия изменилась. Проверьте обновления заново.".into());
+        }
+        validate_offer(&version, update.download_url.as_str())?;
+        let target = crate::update_install::app_path(
+            &std::env::current_exe().map_err(|_| "Не найдено установленное приложение.")?,
+        )?;
+        update.timeout = Some(std::time::Duration::from_secs(180));
+        let signal = std::sync::Arc::new(tokio::sync::Notify::new());
+        *updates.cancel.lock().unwrap() = Some(signal.clone());
+        let mut downloaded = 0u64;
+        let mut emitted = 0u64;
+        let _ = app.emit(
+            "app-update-progress",
+            Progress {
+                stage: "downloading",
+                downloaded: 0,
+                total: None,
+            },
+        );
+        let download = update.download(
+            |chunk, total| {
+                downloaded = downloaded.saturating_add(chunk as u64);
+                if downloaded > 256 * 1024 * 1024 || total.is_some_and(|s| s > 256 * 1024 * 1024) {
+                    signal.notify_one();
+                }
+                if downloaded - emitted >= 256 * 1024 {
+                    emitted = downloaded;
+                    let _ = app.emit(
+                        "app-update-progress",
+                        Progress {
+                            stage: "downloading",
+                            downloaded,
+                            total,
+                        },
+                    );
+                }
+            },
+            || {},
+        );
+        let bytes = tokio::select! { biased; _=signal.notified()=>return Err("Скачивание отменено или превышен допустимый размер. Приложение и VPN не менялись.".into()), result=download=>result.map_err(|_| "Не удалось скачать обновление или проверить его цифровую подпись. Приложение и VPN не менялись.")? };
+        if bytes.len() > 256 * 1024 * 1024 {
+            return Err("Обновление превышает допустимый размер.".into());
+        }
+        let _ = app.emit(
+            "app-update-progress",
+            Progress {
+                stage: "verifying",
+                downloaded: bytes.len() as u64,
+                total: None,
+            },
+        );
+        let v = version.clone();
+        let prepared = tauri::async_runtime::spawn_blocking(move || {
+            crate::update_install::prepare(&bytes, &target, &v)
+        })
+        .await
+        .map_err(|_| "Не удалось подготовить обновление.")??;
+        if signal.notified().now_or_never().is_some() {
+            return Err("Установка отменена. Приложение и VPN не менялись.".into());
+        }
+        *updates.cancel.lock().unwrap() = None;
+        // Persist recovery marker before replacement, while keeping the old preferences for rollback.
+        let old = updates.read()?;
+        let mut next = old.clone();
+        next.pending_version = if vpn.profile.lock().unwrap().settings.tun {
+            Some(version)
+        } else {
+            None
+        };
+        next.skipped_version = None;
+        updates.write(&next)?;
+        let _ = app.emit(
+            "app-update-progress",
+            Progress {
+                stage: "installing",
+                downloaded: 0,
+                total: None,
+            },
+        );
+        let state = vpn.inner().clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            state.installing.store(true, Ordering::SeqCst);
+            let result = (|| {
+                state.vault.save(&state.profile.lock().unwrap())?;
+                crate::disconnect(&state)?;
+                prepared.commit().map(|_| ())
+            })();
+            if result.is_err() {
+                state.installing.store(false, Ordering::SeqCst);
+            }
+            result
+        })
+        .await
+        .map_err(|_| {
+            vpn.installing.store(false, Ordering::SeqCst);
+            let _ = updates.write(&old);
+            "Не удалось установить обновление. Проверьте подключение VPN."
+        })?;
+        if let Err(error) = result {
+            let _ = updates.write(&old);
+            return Err(format!("{error} Если VPN отключён, подключите его заново."));
+        }
+        app.request_restart();
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (version, app, vpn);
+        Err("Обновление доступно только на macOS Apple Silicon.".into())
+    }
+}
+#[cfg(target_os = "macos")]
+use futures_util::FutureExt;
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    fn state(path: PathBuf) -> AppUpdates {
+        AppUpdates {
+            path,
+            busy: AtomicBool::new(false),
+            offer: Mutex::new(None),
+            cancel: Mutex::new(None),
+        }
+    }
+    #[test]
+    fn defaults_and_atomic_preferences_do_not_use_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let state = state(root.path().join("updates.json"));
+        assert!(state.read().unwrap().auto_check);
+        let p = Preferences {
+            auto_check: false,
+            skipped_version: Some("0.1.7".into()),
+            pending_version: Some("0.1.8".into()),
+        };
+        state.write(&p).unwrap();
+        let read = state.read().unwrap();
+        assert!(!read.auto_check);
+        assert_eq!(read.skipped_version, p.skipped_version);
+        assert_eq!(read.pending_version, p.pending_version);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn corrupted_preferences_are_never_silently_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let state = state(root.path().join("updates.json"));
+        fs::write(&state.path, "broken").unwrap();
+        assert!(state.read().is_err());
+        assert_eq!(fs::read_to_string(&state.path).unwrap(), "broken");
+    }
+    #[test]
+    fn duplicate_operations_block_and_guard_releases_on_error() {
+        let state = state(PathBuf::from("unused"));
+        let first = state.acquire().unwrap();
+        assert!(state.acquire().is_err());
+        drop(first);
+        assert!(state.acquire().is_ok());
+    }
+    #[test]
+    fn iphone_foreign_and_downgrade_channel_urls_rejected() {
+        let valid="https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.7/foxVPN-0.1.7-macOS-arm64.app.tar.gz";
+        assert!(validate_offer("0.1.7", valid).is_ok());
+        for (version, url) in [
+            ("ios-v0.1.7", valid),
+            ("0.1.7-beta.1", valid),
+            ("0.1.7", "https://example.com/app.tar.gz"),
+            ("0.1.8", valid),
+            (
+                "0.1.7",
+                "http://github.com/kvashninsasha-gif/smart-vpn-router/app.tar.gz",
+            ),
+        ] {
+            assert!(validate_offer(version, url).is_err());
+        }
+    }
+}

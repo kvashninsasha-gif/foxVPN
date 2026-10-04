@@ -1,4 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(target_os = "macos")]
+mod update_install;
+mod updates;
 use serde::Serialize;
 use smart_vpn_engine::{
     latency,
@@ -55,6 +58,7 @@ impl ActiveCore {
 }
 #[derive(Clone)]
 struct State {
+    installing: Arc<std::sync::atomic::AtomicBool>,
     profile: Arc<Mutex<Profile>>,
     vault: Arc<Vault>,
     core: Arc<Mutex<Option<ActiveCore>>>,
@@ -78,6 +82,9 @@ fn edit<T>(s: &State, f: impl FnOnce(&mut Profile) -> Result<T, String>) -> Resu
         .gate
         .lock()
         .map_err(|_| smart_vpn_engine::text("message_311"))?;
+    if s.installing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("Выполняется установка обновления.".into());
+    }
     let mut current = s
         .profile
         .lock()
@@ -342,6 +349,9 @@ fn stop_core(s: &State) {
 }
 fn connect_impl(s: &State) -> Result<u16, String> {
     let _guard = s.gate.lock().unwrap();
+    if s.installing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("Выполняется установка обновления.".into());
+    }
     if !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(smart_vpn_engine::text("connection_cancelled").into());
     }
@@ -788,6 +798,13 @@ fn main() {
             None,
         ))
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            let app_updates =
+                updates::AppUpdates::new(app.handle()).map_err(std::io::Error::other)?;
+            let pending_helper = updates::pending_helper(app.handle(), &app_updates);
+            app.manage(app_updates);
             let vault = Arc::new(Vault::new("ru.smartvpn.router"));
             let profile = vault.load().map_err(std::io::Error::other)?;
             profile.validate().map_err(std::io::Error::other)?;
@@ -806,6 +823,7 @@ fn main() {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../core/sing-box")
             };
             let state = State {
+                installing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 profile: Arc::new(Mutex::new(profile.clone())),
                 vault,
                 core: Arc::new(Mutex::new(None)),
@@ -939,7 +957,10 @@ fn main() {
             }
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                if profile.settings.auto_connect && startup_plan == ConnectionPlan::Ready {
+                if !pending_helper
+                    && profile.settings.auto_connect
+                    && startup_plan == ConnectionPlan::Ready
+                {
                     state
                         .wanted
                         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1094,6 +1115,12 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            updates::update_state,
+            updates::update_preferences,
+            updates::check_app_update,
+            updates::skip_app_update,
+            updates::install_app_update,
+            updates::cancel_app_update,
             snapshot,
             runtime,
             install_network_helper,
