@@ -107,8 +107,9 @@ public struct VPNSettings: Codable {
     public var dns_transport = "https"
     public var auto_connect = false
     public var include_all_networks = true
+    public var ios = IOSPreferences()
     public init() {}
-    enum CodingKeys: String, CodingKey { case mode, dns_provider, dns_transport, auto_connect, include_all_networks, dns_protection }
+    enum CodingKeys: String, CodingKey { case mode, dns_provider, dns_transport, auto_connect, include_all_networks, dns_protection, ios = "fox_ios" }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         mode = try c.decodeIfPresent(RoutingMode.self, forKey: .mode) ?? .smart
@@ -116,11 +117,13 @@ public struct VPNSettings: Codable {
         dns_transport = try c.decodeIfPresent(String.self, forKey: .dns_transport) ?? "https"
         auto_connect = try c.decodeIfPresent(Bool.self, forKey: .auto_connect) ?? false
         include_all_networks = try c.decodeIfPresent(Bool.self, forKey: .include_all_networks) ?? true
+        ios = try c.decodeIfPresent(IOSPreferences.self, forKey: .ios) ?? IOSPreferences()
     }
 }
 extension VPNSettings {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(ios, forKey: .ios)
         try c.encode(mode, forKey: .mode); try c.encode(dns_provider, forKey: .dns_provider); try c.encode(dns_transport, forKey: .dns_transport)
         try c.encode(auto_connect, forKey: .auto_connect); try c.encode(include_all_networks, forKey: .include_all_networks); try c.encode(dns_transport != "local", forKey: .dns_protection)
     }
@@ -140,6 +143,7 @@ public struct VPNProfile: Codable {
     public var selectedServer: VPNServer? { servers.first { $0.id == selected } }
     public func validate() throws {
         guard version == 1, servers.count <= 5000, rules.count <= 5000, subscriptions.count <= 5000, ["cloudflare", "google", "quad9"].contains(settings.dns_provider), ["https", "tls", "local"].contains(settings.dns_transport) else { throw FoxError.invalid("Неподдерживаемая версия или настройки профиля.") }
+        try settings.ios.validate()
         var ids = Set<String>(), fingerprints = Set<String>(), domains = Set<String>()
         for server in servers {
             try server.validate()

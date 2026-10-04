@@ -3,33 +3,47 @@ import SwiftUI
 struct ServerEditor: View {
     @EnvironmentObject var vpn: VPNController
     @Environment(\.dismiss) private var dismiss
-    let server: VPNServer
-    @State private var name: String
-    @State private var group: String
-    @State private var favorite: Bool
-    init(server: VPNServer) { self.server = server; _name = State(initialValue: server.name); _group = State(initialValue: server.group); _favorite = State(initialValue: server.favorite) }
+    let server: VPNServer?
+    @State private var draft: ServerDraft
+    @State private var modalID = UUID()
+    init(server: VPNServer? = nil) { self.server = server; _draft = State(initialValue: ServerDraft(server: server)) }
     var body: some View {
         NavigationStack {
             Form {
-                if let error = vpn.error { Section { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red) } }
                 Section("Сервер") {
-                    TextField("Название", text: $name).accessibilityIdentifier("serverName")
-                    TextField("Группа", text: $group).accessibilityIdentifier("serverGroup")
-                    Toggle("Избранный", isOn: $favorite)
-                    LabeledContent("Протокол", value: "VLESS / \(server.transport.uppercased())")
-                    LabeledContent("Защита", value: server.security.uppercased())
+                    TextField("Название", text: $draft.name).accessibilityIdentifier("serverName")
+                    TextField("Группа", text: $draft.group).accessibilityIdentifier("serverGroup")
+                    Toggle("Избранный", isOn: $draft.favorite)
                 }
-                Section { Button("Сохранить изменения") {
+                if server == nil { connectionFields }
+                else { DisclosureGroup("Параметры подключения") { connectionFields } }
+                Section { Button(server == nil ? "Добавить сервер" : "Сохранить изменения") {
                     if vpn.change({ profile in
-                        guard let i = profile.servers.firstIndex(where: { $0.id == server.id }) else { throw FoxError.invalid("Сервер уже удалён.") }
-                        profile.servers[i].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        profile.servers[i].group = group.trimmingCharacters(in: .whitespacesAndNewlines)
-                        profile.servers[i].favorite = favorite
+                        let value = try draft.server()
+                        if let server {
+                            guard let index = profile.servers.firstIndex(where: { $0.id == server.id }) else { throw FoxError.invalid("Сервер уже удалён.") }
+                            profile.servers[index] = value
+                        } else { profile.servers.append(value); if profile.selected == nil { profile.selected = value.id } }
                     }) { vpn.notice = "Сервер сохранён"; dismiss() }
-                }.disabled(!vpn.editable || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-            }.navigationTitle("Редактировать сервер").navigationBarTitleDisplayMode(.inline)
+                }.accessibilityIdentifier("serverSave").disabled(!vpn.editable || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            }.safeAreaInset(edge: .top) { InlineErrorBanner() }.navigationTitle(server == nil ? "Новый сервер" : "Редактировать сервер").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Отмена") { dismiss() } }
-        }.onAppear { vpn.importPresented = true; vpn.error = nil }
-        .onDisappear { vpn.importPresented = false; vpn.error = nil }
+        }.onAppear { vpn.beginEditingSheet(modalID) }.onDisappear { vpn.endEditingSheet(modalID) }
+    }
+    @ViewBuilder private var connectionFields: some View {
+        TextField("Адрес", text: $draft.address).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverAddress")
+        TextField("Порт", text: $draft.port).keyboardType(.numberPad).accessibilityIdentifier("serverPort")
+        TextField("UUID", text: $draft.uuid).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverUUID")
+        Picker("Транспорт", selection: $draft.transport) { Text("TCP").tag("tcp"); Text("WebSocket").tag("ws"); Text("gRPC").tag("grpc") }
+        Picker("Защита", selection: $draft.security) { Text("TLS").tag("tls"); Text("Reality").tag("reality"); Text("Без TLS").tag("none") }
+        TextField("SNI", text: $draft.sni).textInputAutocapitalization(.never).autocorrectionDisabled()
+        if draft.security == "reality" { TextField("Public key", text: $draft.publicKey).textInputAutocapitalization(.never).autocorrectionDisabled(); TextField("Short ID", text: $draft.shortID).textInputAutocapitalization(.never).autocorrectionDisabled() }
+        if draft.transport == "ws" { TextField("Путь WebSocket", text: $draft.path).textInputAutocapitalization(.never).autocorrectionDisabled(); TextField("Host", text: $draft.host).textInputAutocapitalization(.never).autocorrectionDisabled() }
+        if draft.transport == "grpc" { TextField("Service name", text: $draft.service).textInputAutocapitalization(.never).autocorrectionDisabled() }
+        DisclosureGroup("Дополнительно") {
+            TextField("TLS fingerprint", text: $draft.fingerprint).textInputAutocapitalization(.never).autocorrectionDisabled()
+            TextField("Flow", text: $draft.flow).textInputAutocapitalization(.never).autocorrectionDisabled()
+            TextField("ALPN через запятую", text: $draft.alpn).textInputAutocapitalization(.never).autocorrectionDisabled()
+        }
     }
 }

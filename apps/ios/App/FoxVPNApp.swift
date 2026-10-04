@@ -1,8 +1,9 @@
 import SwiftUI
 
 @main struct FoxVPNApp: App {
+    @Environment(\.scenePhase) private var phase
     @StateObject private var controller = VPNController()
-    var body: some Scene { WindowGroup { ContentView().environmentObject(controller).tint(Color.foxOrange).preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--ui-testing") && ProcessInfo.processInfo.arguments.contains("--ui-dark") ? .dark : nil) } }
+    var body: some Scene { WindowGroup { ContentView().environmentObject(controller).tint(Color.foxOrange).onChange(of: phase) { controller.setForeground($0 == .active) }.onAppear { controller.setForeground(phase == .active) }.preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--ui-testing") && ProcessInfo.processInfo.arguments.contains("--ui-dark") ? .dark : nil) } }
 }
 
 extension Color {

@@ -9,6 +9,12 @@ import NetworkExtension
     func start(settings: VPNSettings) async throws
     func stop() async throws
     func statistics() async throws -> Data?
+    func routeSnapshot() async throws -> TunnelRouteSnapshot?
+    func measure(tag: String) async throws -> Int?
+}
+extension TunnelBackend {
+    func routeSnapshot() async throws -> TunnelRouteSnapshot? { nil }
+    func measure(tag: String) async throws -> Int? { nil }
 }
 
 @MainActor final class SystemTunnelBackend: TunnelBackend {
@@ -68,15 +74,27 @@ import NetworkExtension
         manager.connection.stopVPNTunnel()
         onStatusChange?(manager.connection.status)
     }
-    func statistics() async throws -> Data? {
-        guard let session = manager?.connection as? NETunnelProviderSession else { return nil }
+    func statistics() async throws -> Data? { try await message(Data("stats".utf8), timeout: 3) }
+    func routeSnapshot() async throws -> TunnelRouteSnapshot? {
+        guard let data = try await message(Data("route".utf8), timeout: 3) else { return nil }
+        return try JSONDecoder().decode(TunnelRouteSnapshot.self, from: data)
+    }
+    func measure(tag: String) async throws -> Int? {
+        let input = try JSONSerialization.data(withJSONObject: ["measure": tag])
+        guard let data = try await message(input, timeout: 11),
+              let value = try JSONSerialization.jsonObject(with: data) as? [String: NSNumber] else { return nil }
+        return value["delay"]?.intValue
+    }
+    private func message(_ data: Data, timeout: Double) async throws -> Data? {
+        guard let session = manager?.connection as? NETunnelProviderSession, status == .connected else { return nil }
         return try await withCheckedThrowingContinuation { continuation in
             let reply = ProviderReply(continuation)
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { reply.complete(.success(nil)) }
-            do { try session.sendProviderMessage(Data("stats".utf8)) { reply.complete(.success($0)) } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { reply.complete(.success(nil)) }
+            do { try session.sendProviderMessage(data) { reply.complete(.success($0)) } }
             catch { reply.complete(.failure(error)) }
         }
     }
+
 }
 
 // The extension can die without replying; timeout and late callbacks race safely.

@@ -10,6 +10,7 @@ struct ContentView: View {
             NavigationStack { overview }.tabItem { Label("Обзор", systemImage: "shield.lefthalf.filled") }
             NavigationStack { ServersView() }.tabItem { Label("Серверы", systemImage: "server.rack") }
             NavigationStack { RoutingView() }.tabItem { Label("Правила", systemImage: "arrow.triangle.branch") }
+            NavigationStack { StatisticsView() }.tabItem { Label("Статистика", systemImage: "chart.bar") }
             NavigationStack { SettingsView() }.tabItem { Label("Настройки", systemImage: "gearshape") }
         }
         .safeAreaInset(edge: .top) {
@@ -34,9 +35,9 @@ struct ContentView: View {
                 VStack(spacing: 18) {
                     Image("FoxIcon").resizable().scaledToFit().frame(width: 110, height: 110).clipShape(RoundedRectangle(cornerRadius: 32)).padding(20).background(vpn.healthy ? Color.green.opacity(0.10) : Color.foxOrange.opacity(0.08), in: Circle())
                     Text(vpn.title).font(.title.bold()).accessibilityIdentifier("connectionStatus")
-                    Text(vpn.profile.selectedServer?.name ?? "Добавьте свой VPN-сервер").font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Text(vpn.profile.servers.first { $0.id == vpn.activeServerID }?.name ?? vpn.profile.selectedServer?.name ?? "Добавьте свой VPN-сервер").font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button {
-                        if vpn.profile.selectedServer == nil { importSheet = true }
+                        if !vpn.active && vpn.profile.selectedServer == nil { importSheet = true }
                         else { Task { await vpn.toggleConnection() } }
                     } label: { Label(vpn.busy ? "Подождите…" : vpn.active ? "Отключиться" : "Подключиться", systemImage: "power").foregroundStyle(Color.foxButtonText).font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8) }
                     .buttonStyle(.borderedProminent).disabled(vpn.busy || (!vpn.loaded && !vpn.active)).accessibilityIdentifier("connectButton")
@@ -70,6 +71,7 @@ struct ServersView: View {
     @State private var showImport = false
     @State private var query = ""
     @State private var favoriteOnly = false
+    @State private var selectedGroup = ""
     @State private var deleting: VPNServer?
     @State private var qr: VPNServer?
     @State private var editing: VPNServer?
@@ -78,8 +80,9 @@ struct ServersView: View {
             if vpn.profile.servers.isEmpty { VStack(spacing: 14) { Image(systemName: "server.rack").font(.largeTitle).foregroundStyle(Color.foxOrange); Text("Ваши серверы").font(.title2.bold()); Text("Вставьте VLESS-ссылку, отсканируйте QR или импортируйте профиль foxVPN с Mac.").foregroundStyle(.secondary).multilineTextAlignment(.center); Button("Добавить сервер") { showImport = true }.buttonStyle(.borderedProminent) }.padding(.vertical, 32).frame(maxWidth: .infinity).listRowBackground(Color.clear) }
             else {
                 Toggle("Только избранные", isOn: $favoriteOnly)
-                ForEach(vpn.profile.servers.filter { (!favoriteOnly || $0.favorite) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.group.localizedCaseInsensitiveContains(query)) }) { server in
-                    Button { vpn.change { $0.selected = server.id } } label: { HStack { Image(systemName: server.favorite ? "star.fill" : "server.rack").foregroundStyle(Color.foxOrange); VStack(alignment: .leading) { Text(server.name).foregroundStyle(.primary); Text("\(server.group) · \(server.transport.uppercased()) · \(server.security.uppercased())").font(.caption).foregroundStyle(.secondary) }; Spacer(); if vpn.profile.selected == server.id { Image(systemName: "checkmark.circle.fill") } } }.disabled(!vpn.editable)
+                Picker("Группа", selection: $selectedGroup) { Text("Все группы").tag(""); ForEach(Array(Set(vpn.profile.servers.map(\.group))).sorted(), id: \.self) { Text($0).tag($0) } }
+                ForEach(vpn.profile.servers.filter { (!favoriteOnly || $0.favorite) && (selectedGroup.isEmpty || $0.group == selectedGroup) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.group.localizedCaseInsensitiveContains(query)) }) { server in
+                    Button { vpn.change { $0.selected = server.id } } label: { HStack { Image(systemName: server.favorite ? "star.fill" : "server.rack").foregroundStyle(Color.foxOrange); VStack(alignment: .leading) { Text(server.name).foregroundStyle(.primary); Text("\(server.group) · \(server.transport.uppercased()) · \(server.security.uppercased())").font(.caption).foregroundStyle(.secondary); if let delay = vpn.delays[server.id] { Text("Сейчас: \(delay) мс").font(.caption).foregroundStyle(Color.foxOrange) } else if let delay = server.latency_ms { Text("Последний тест: \(delay) мс").font(.caption).foregroundStyle(.secondary) } }; Spacer(); if vpn.profile.selected == server.id { Image(systemName: "checkmark.circle.fill") } } }.disabled(!vpn.editable)
                     .contextMenu { Button(server.favorite ? "Убрать из избранного" : "В избранное") { vpn.change { p in let i = p.servers.firstIndex { $0.id == server.id }; if let i { p.servers[i].favorite.toggle() } } }.disabled(!vpn.editable); Button("Редактировать") { editing = server }.disabled(!vpn.editable); Button("Показать QR") { qr = server }; ShareLink(item: server.uri()) { Label("Поделиться ссылкой", systemImage: "square.and.arrow.up") }; Button("Удалить", role: .destructive) { deleting = server }.disabled(!vpn.editable) }
                 }
             }
@@ -96,19 +99,34 @@ struct ImportView: View {
     @State private var text = ""
     @State private var file = false
     @State private var scanner = false
+    @State private var manual = false
+    @State private var qrFile = false
+    @State private var imageTask: Task<Void, Never>?
+    @State private var modalID = UUID()
     @State private var pendingProfile: Data?
     var body: some View {
         NavigationStack {
             Form {
-                if let error = vpn.error { Section { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red) } }
                 Section("VLESS-ссылки") { TextEditor(text: $text).frame(minHeight: 150).autocorrectionDisabled().textInputAutocapitalization(.never).accessibilityIdentifier("importText"); PasteButton(payloadType: String.self) { values in text = values.joined(separator: "\n") }; Button("Сканировать QR", systemImage: "qrcode.viewfinder") { scanner = true }.disabled(!vpn.editable) }
-                Section { Button("Импортировать ссылки") { vpn.importLinks(text); if vpn.error == nil { dismiss() } }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !vpn.editable); Button("Импортировать файл с Mac") { file = true }.disabled(!vpn.editable) } footer: { Text("JSON-профиль foxVPN или текстовый файл с VLESS-ссылками. Профиль с Mac содержит ключи доступа: передавайте его только себе. Импорт JSON заменяет текущий профиль.") }
-            }.navigationTitle("Добавить сервер").toolbar { Button("Закрыть") { dismiss() } }
+                Section { Button("Добавить вручную") { manual = true }.disabled(!vpn.editable); Button("QR из изображения") { qrFile = true }.disabled(!vpn.editable); Button("Импортировать ссылки") { vpn.importLinks(text); if vpn.error == nil { dismiss() } }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !vpn.editable); Button("Импортировать файл с Mac") { file = true }.disabled(!vpn.editable) } footer: { Text("JSON-профиль foxVPN или текстовый файл с VLESS-ссылками. Профиль с Mac содержит ключи доступа: передавайте его только себе. Импорт JSON заменяет текущий профиль.") }
+            }.safeAreaInset(edge: .top) { InlineErrorBanner() }.navigationTitle("Добавить сервер").toolbar { Button("Закрыть") { dismiss() } }
             .fileImporter(isPresented: $file, allowedContentTypes: [.json, .plainText]) { result in
                 do { let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; let attrs = try url.resourceValues(forKeys: [.fileSizeKey]); guard (attrs.fileSize ?? 0) <= 4_000_000 else { throw FoxError.invalid("Файл слишком большой.") }; let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }; let data = try handle.read(upToCount: 4_000_001) ?? Data(); let value = try ProfileImport.parse(data); let isJSON: Bool; if case .profile = value { isJSON = true } else { isJSON = false }; if isJSON && (!vpn.profile.servers.isEmpty || !vpn.profile.rules.isEmpty || !vpn.profile.subscriptions.isEmpty) { pendingProfile = data } else { vpn.importFile(data); if vpn.error == nil { dismiss() } } } catch { if (error as NSError).code != NSUserCancelledError { vpn.error = (error as? FoxError)?.localizedDescription ?? "Не удалось прочитать файл профиля." } }
-            }.confirmationDialog("Заменить текущий профиль?", isPresented: Binding(get: { pendingProfile != nil }, set: { if !$0 { pendingProfile = nil } }), titleVisibility: .visible) { Button("Заменить профиль", role: .destructive) { if let data = pendingProfile { vpn.importFile(data); if vpn.error == nil { dismiss() } }; pendingProfile = nil }; Button("Отмена", role: .cancel) { pendingProfile = nil } } message: { Text("Серверы, правила и настройки будут заменены данными из файла.") }.sheet(isPresented: $scanner) { QRScanner { value in text = value; scanner = false } }
-        }.onAppear { vpn.importPresented = true; vpn.error = nil }
-        .onDisappear { vpn.error = nil; vpn.importPresented = false }
+            }.confirmationDialog("Заменить текущий профиль?", isPresented: Binding(get: { pendingProfile != nil }, set: { if !$0 { pendingProfile = nil } }), titleVisibility: .visible) { Button("Заменить профиль", role: .destructive) { if let data = pendingProfile { vpn.importFile(data); if vpn.error == nil { dismiss() } }; pendingProfile = nil }; Button("Отмена", role: .cancel) { pendingProfile = nil } } message: { Text("Серверы, правила и настройки будут заменены данными из файла.") }.sheet(isPresented: $scanner) { QRScanner { value in text = value; scanner = false } }.sheet(isPresented: $manual) { ServerEditor() }
+            .fileImporter(isPresented: $qrFile, allowedContentTypes: [.image]) { result in
+                do {
+                    let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0; guard size <= 20_000_000 else { throw FoxError.invalid("Изображение слишком большое.") }
+                    let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }; let data = try handle.read(upToCount: 20_000_001) ?? Data()
+                    imageTask?.cancel()
+                    imageTask = Task {
+                        do { let links = try await Task.detached(priority: .userInitiated) { try QRImageReader.links(from: data) }.value; guard !Task.isCancelled else { return }; text = links; vpn.error = nil }
+                        catch { if !Task.isCancelled { vpn.error = (error as? FoxError)?.localizedDescription ?? "Не удалось прочитать QR." } }
+                    }
+                } catch { if (error as NSError).code != NSUserCancelledError { vpn.error = error.localizedDescription } }
+            }
+        }.onAppear { vpn.beginEditingSheet(modalID) }
+        .onDisappear { imageTask?.cancel(); vpn.endEditingSheet(modalID) }
     }
 }
 

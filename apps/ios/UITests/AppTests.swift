@@ -51,7 +51,7 @@ final class AppTests: XCTestCase {
         app.buttons["Сохранить изменения"].tap()
         XCTAssertTrue(app.staticTexts["My fox server"].waitForExistence(timeout: 5))
         app.tabBars.buttons["Настройки"].tap()
-        let export = app.buttons["Экспортировать резервную копию"]; app.swipeUp(); XCTAssertTrue(export.waitForExistence(timeout: 5)); export.tap()
+        let export = app.buttons["Экспортировать резервную копию"]; scrollTo(export, in: app); export.tap()
         XCTAssertTrue(app.staticTexts["Экспорт содержит ключи доступа"].waitForExistence(timeout: 5))
         app.buttons["Отмена"].tap(); XCTAssertFalse(app.buttons["Выбрать место сохранения"].exists)
     }
@@ -63,6 +63,39 @@ final class AppTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Камера недоступна в симуляторе. Используйте вставку ссылки или импорт файла."].exists)
         app.alerts.buttons["Закрыть"].tap()
         XCTAssertTrue(app.textViews["importText"].waitForExistence(timeout: 5))
+    }
+
+    func testManualServerAndStatisticsDoNotInventMeasurements() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Отключено"].waitForExistence(timeout: 10)); app.buttons["connectButton"].tap()
+        app.buttons["Добавить вручную"].tap()
+        let name = app.textFields["serverName"]; XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Manual fixture")
+        app.textFields["serverAddress"].tap(); app.textFields["serverAddress"].typeText("example.com")
+        let uuid = app.textFields["serverUUID"]; uuid.tap(); uuid.typeText("00000000-0000-4000-8000-000000000001")
+        let save = app.buttons["serverSave"]; scrollTo(save, in: app); save.tap()
+        XCTAssertTrue(app.buttons["Закрыть"].waitForExistence(timeout: 5)); app.buttons["Закрыть"].tap()
+        app.tabBars.buttons["Серверы"].tap(); XCTAssertTrue(app.staticTexts["Manual fixture"].waitForExistence(timeout: 5))
+        app.tabBars.buttons["Статистика"].tap()
+        XCTAssertTrue(app.staticTexts["Текущий сеанс"].waitForExistence(timeout: 5))
+        let measurement = app.buttons["Проверить серверы подключения"]; XCTAssertTrue(measurement.exists); XCTAssertFalse(measurement.isEnabled)
+        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "foxVPN-Statistics"; screenshot.lifetime = .keepAlways; add(screenshot)
+    }
+    func testEditingSubscriptionPreservesItAndDoesNotTriggerDelete() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Отключено"].waitForExistence(timeout: 10)); app.tabBars.buttons["Настройки"].tap()
+        let name = app.textFields["subscriptionName"]; scrollTo(name, in: app); name.tap(); name.typeText("Fixture subscription")
+        let url = app.textFields["subscriptionURL"]; scrollTo(url, in: app); url.tap(); url.typeText("https://example.com/sub")
+        let add = app.buttons["Добавить подписку"]; scrollTo(add, in: app); add.tap()
+        let edit = app.buttons["Изменить"]; scrollTo(edit, in: app, up: false); edit.tap()
+        let changed = app.textFields["subscriptionEditName"]; XCTAssertTrue(changed.waitForExistence(timeout: 5)); changed.tap()
+        changed.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "Fixture subscription".count) + "Edited fixture")
+        app.buttons["Сохранить подписку"].tap()
+        XCTAssertTrue(app.staticTexts["Edited fixture"].waitForExistence(timeout: 5)); XCTAssertFalse(app.buttons["Удалить вместе с серверами"].exists)
+    }
+    private func scrollTo(_ element: XCUIElement, in app: XCUIApplication, up: Bool = true) {
+        var tries = 0
+        while !element.exists && tries < 8 { if up { app.swipeUp() } else { app.swipeDown() }; tries += 1 }
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
     }
 
 }

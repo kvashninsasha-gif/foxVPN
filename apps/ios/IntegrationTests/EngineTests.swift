@@ -36,4 +36,12 @@ final class EngineTests: XCTestCase {
         let config = "{\"outbounds\":[{\"type\":\"unknown-outbound\",\"tag\":\"vpn\",\"server\":\"example.com\",\"server_port\":443,\"uuid\":\"invalid\"}]}"
         var error: NSError?; XCTAssertFalse(LibboxCheckConfig(config, &error)); XCTAssertNotNil(error)
     }
+    func testActualLibboxAcceptsAutomaticPoolForAllModesAndDNS() throws {
+        for mode in RoutingMode.allCases { for dns in ["https", "tls", "local"] {
+            var p = VPNProfile(); _ = try p.importLinks("vless://00000000-0000-4000-8000-000000000001@example.com:443?security=tls&type=tcp#First\nvless://00000000-0000-4000-8000-000000000002@second.example.com:443?security=tls&type=ws&path=%2Fws#Second")
+            p.settings.mode = mode; p.settings.dns_transport = dns; p.settings.ios.automatic_server = true
+            var error: NSError?; XCTAssertTrue(LibboxCheckConfig(try TunnelConfiguration.make(profile: p, apiPort: 9090, secret: "synthetic-test-secret"), &error)); XCTAssertNil(error)
+        } }
+    }
+
 }

@@ -36,6 +36,7 @@ struct RoutingView: View {
 struct RuleEditor: View {
     @EnvironmentObject var vpn: VPNController
     @Environment(\.dismiss) private var dismiss
+    @State private var modalID = UUID()
     let rule: DomainRule
     @State private var domain: String
     @State private var route: String
@@ -43,7 +44,6 @@ struct RuleEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                if let error = vpn.error { Section { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red) } }
                 TextField("Домен или *.домен", text: $domain).autocorrectionDisabled().textInputAutocapitalization(.never)
                 Picker("Маршрут", selection: $route) { Text("Через VPN").tag("vpn"); Text("Напрямую").tag("direct") }
                 Button("Сохранить правило") {
@@ -52,8 +52,8 @@ struct RuleEditor: View {
                         p.rules[index] = try DomainRule(domain: domain, route: route).normalized()
                     }) { vpn.notice = "Правило сохранено"; dismiss() }
                 }.disabled(!vpn.editable || domain.isEmpty)
-            }.navigationTitle("Редактировать правило").navigationBarTitleDisplayMode(.inline).toolbar { Button("Отмена") { dismiss() } }
-        }.onAppear { vpn.importPresented = true; vpn.error = nil }.onDisappear { vpn.importPresented = false; vpn.error = nil }
+            }.safeAreaInset(edge: .top) { InlineErrorBanner() }.navigationTitle("Редактировать правило").navigationBarTitleDisplayMode(.inline).toolbar { Button("Отмена") { dismiss() } }
+        }.onAppear { vpn.beginEditingSheet(modalID) }.onDisappear { vpn.endEditingSheet(modalID) }
     }
 }
 
@@ -61,6 +61,7 @@ struct SettingsView: View {
     @EnvironmentObject var vpn: VPNController
     @State private var subscriptionName = ""
     @State private var subscriptionURL = ""
+    @State private var editingSubscription: VPNSubscription?
     @State private var removing: VPNSubscription?
     @State private var exportWarning = false
     @State private var exportFile = false
@@ -72,20 +73,35 @@ struct SettingsView: View {
                 Toggle("Подключаться по требованию", isOn: setting(\.auto_connect)).disabled(!vpn.editable)
                 Toggle("Охватывать все сети", isOn: setting(\.include_all_networks)).disabled(!vpn.editable)
             } header: { Text("Подключение") } footer: { Text("iOS управляет VPN в фоне. Охват всех сетей использует системную политику iOS; её защита при сбоях ещё требует проверки на вашем iPhone. Явное отключение отменяет подключение по требованию до следующего подключения.") }
+            Section {
+                Toggle("Автоматический выбор сервера", isOn: setting(\.ios.automatic_server)).disabled(!vpn.editable)
+                Toggle("Резервы только из избранных", isOn: setting(\.ios.favorites_only)).disabled(!vpn.editable || !vpn.profile.settings.ios.automatic_server)
+                Picker("Группа резервов", selection: setting(\.ios.server_group)) {
+                    Text("Все группы").tag("")
+                    ForEach(Array(Set(vpn.profile.servers.map(\.group) + (vpn.profile.settings.ios.server_group.isEmpty ? [] : [vpn.profile.settings.ios.server_group]))).sorted(), id: \.self) { Text($0).tag($0) }
+                }.disabled(!vpn.editable || !vpn.profile.settings.ios.automatic_server)
+                LabeledContent("Серверов в наборе", value: String(vpn.profile.connectionPool.count))
+            } header: { Text("Автоматический выбор") } footer: { Text("Выбранный сервер и до 7 резервов. Ядро проверяет их каждую минуту и выбирает доступный с лучшим временем ответа. Переключение происходит внутри того же туннеля; существующее соединение сайта может потребовать повторного открытия.") }
             Section("DNS") {
                 Picker("Провайдер", selection: setting(\.dns_provider)) { Text("Cloudflare").tag("cloudflare"); Text("Google").tag("google"); Text("Quad9").tag("quad9") }.disabled(!vpn.editable)
                 Picker("Защита DNS", selection: setting(\.dns_transport)) { Text("DNS over HTTPS").tag("https"); Text("DNS over TLS").tag("tls"); Text("Системный DNS").tag("local") }.disabled(!vpn.editable)
+            }
+            Section("Обновление подписок") {
+                Toggle("Обновлять при запуске", isOn: setting(\.ios.update_on_launch)).disabled(!vpn.editable)
+                Picker("Интервал", selection: setting(\.ios.subscription_hours)) { Text("Вручную").tag(0); Text("Каждый час").tag(1); Text("6 часов").tag(6); Text("12 часов").tag(12); Text("24 часа").tag(24) }.disabled(!vpn.editable)
+                Button(vpn.busy ? "Подождите…" : "Обновить все подписки") { Task { await vpn.updateSubscriptions() } }.disabled(!vpn.editable || vpn.profile.subscriptions.isEmpty)
+                Text("Автоматическое обновление выполняется, пока приложение открыто и VPN отключён. iOS не гарантирует запуск закрытого приложения по расписанию.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Подписки") {
                 ForEach(vpn.profile.subscriptions) { sub in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(sub.name).font(.headline)
                         if let time = sub.updated_at { Text("Обновлено: " + Date(timeIntervalSince1970: Double(time)).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
-                        HStack { Button("Обновить") { Task { await vpn.updateSubscription(sub.id) } }.disabled(!vpn.editable); Spacer(); Button("Удалить", role: .destructive) { removing = sub }.disabled(!vpn.editable) }
+                        HStack { Button("Изменить") { editingSubscription = sub }.disabled(!vpn.editable); Button("Обновить") { Task { await vpn.updateSubscription(sub.id) } }.disabled(!vpn.editable); Spacer(); Button("Удалить", role: .destructive) { removing = sub }.disabled(!vpn.editable) }.buttonStyle(.borderless)
                     }
                 }
-                TextField("Название", text: $subscriptionName)
-                TextField("https://…", text: $subscriptionURL).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField("Название", text: $subscriptionName).accessibilityIdentifier("subscriptionName")
+                TextField("https://…", text: $subscriptionURL).accessibilityIdentifier("subscriptionURL").keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 Button("Добавить подписку") {
                     if vpn.change({ $0.subscriptions.append(VPNSubscription(name: subscriptionName.trimmingCharacters(in: .whitespacesAndNewlines), url: subscriptionURL.trimmingCharacters(in: .whitespacesAndNewlines))) }) { subscriptionName = ""; subscriptionURL = ""; vpn.notice = "Подписка добавлена" }
                 }.disabled(!vpn.editable || subscriptionName.isEmpty || subscriptionURL.isEmpty)
@@ -100,6 +116,7 @@ struct SettingsView: View {
                 Link("Исходники и обновления", destination: URL(string: "https://github.com/kvashninsasha-gif/smart-vpn-router")!)
             }
         }.navigationTitle("Настройки")
+        .sheet(item: $editingSubscription) { SubscriptionEditor(subscription: $0) }
         .confirmationDialog("Удалить подписку?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
             Button("Удалить подписку, оставить серверы") { removeSubscription(false) }
             Button("Удалить вместе с серверами", role: .destructive) { removeSubscription(true) }

@@ -64,7 +64,7 @@ npm run build
 
 ## Версия для iPhone
 
-Нативный проект SwiftUI + Network Extension находится в [apps/ios](apps/ios/README.md). iOS развивается отдельно и выпускается как `ios-v…`; установка системного VPN требует подписи команды Apple Developer с Network Extensions. Проверки симулятора и компиляция для iPhone отделены от физической VPN-приёмки в [verification.md](apps/ios/verification.md).
+Нативный проект SwiftUI + Network Extension находится в [apps/ios](apps/ios/README.md). iOS развивается отдельно и выпускается как `ios-v…`; установка системного VPN требует подписи команды Apple Developer с Network Extensions. Проверки симулятора и компиляция для iPhone отделены от физической VPN-приёмки в [проверках iOS 0.1.2](apps/ios/verification-0.1.2.md).
 
 ## Структура
 
