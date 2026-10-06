@@ -66,15 +66,105 @@ impl Status {
         }
     }
 }
-pub fn ready() -> bool {
-    request(&Request::Status).is_ok_and(|r| r.status.compatible())
+/// Installing or updating the package restarts the daemon, so a check that runs
+/// immediately afterwards must be allowed to wait instead of reporting an
+/// outdated component.
+pub const START_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const PROBE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Result of checking the installed network component.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Probe {
+    /// Answers with the expected protocol and version.
+    Ready,
+    /// The package binds another CDHash/owner, or the daemon speaks an older
+    /// protocol or version. Only this state requires reinstalling the component.
+    Stale,
+    /// The binding is current but the daemon does not answer yet.
+    Starting,
+    /// No network component is installed.
+    Missing,
 }
-pub fn require_current() -> Result<Status, String> {
-    let status = request(&Request::Status)?.status;
-    if !status.compatible() {
-        return Err(crate::text("helper_upgrade").into());
+/// Pure decision table, kept separate from the daemon so the difference between
+/// "restarting" and "outdated" is covered by tests.
+fn classify(installed: bool, mismatch: bool, answer: Option<bool>) -> Probe {
+    if !installed {
+        Probe::Missing
+    } else if mismatch {
+        Probe::Stale
+    } else {
+        match answer {
+            Some(true) => Probe::Ready,
+            Some(false) => Probe::Stale,
+            None => Probe::Starting,
+        }
     }
-    Ok(status)
+}
+#[cfg(target_os = "macos")]
+fn probe_status(wait: std::time::Duration) -> (Probe, Option<Status>) {
+    if !installed() {
+        return (classify(false, false, None), None);
+    }
+    if binding_mismatch() {
+        return (classify(true, true, None), None);
+    }
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match request_with(&Request::Status, PROBE_READ_TIMEOUT) {
+            Ok(response) => {
+                let state = classify(true, false, Some(response.status.compatible()));
+                return (state, Some(response.status));
+            }
+            Err(_) if std::time::Instant::now() >= deadline => {
+                return (classify(true, false, None), None)
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(300)),
+        }
+    }
+}
+#[cfg(not(target_os = "macos"))]
+fn probe_status(_: std::time::Duration) -> (Probe, Option<Status>) {
+    (classify(false, false, None), None)
+}
+pub fn probe(wait: std::time::Duration) -> Probe {
+    probe_status(wait).0
+}
+pub fn ready() -> bool {
+    probe(std::time::Duration::from_millis(0)) == Probe::Ready
+}
+#[cfg(target_os = "macos")]
+pub fn require_current() -> Result<Status, String> {
+    match probe_status(START_WAIT) {
+        (Probe::Ready, Some(status)) => Ok(status),
+        (Probe::Ready, None) => Err(crate::text("helper_starting").into()),
+        (Probe::Stale, _) | (Probe::Missing, _) => Err(crate::text("helper_upgrade").into()),
+        (Probe::Starting, _) => Err(crate::text("helper_starting").into()),
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub fn require_current() -> Result<Status, String> {
+    Err(crate::text("helper_macos_only").into())
+}
+/// The installed package binds this app's CDHash and owner UID. A mismatch means
+/// a stale component; a matching binding that cannot answer only means the
+/// daemon is starting or restarting.
+#[cfg(target_os = "macos")]
+pub fn binding_mismatch() -> bool {
+    let base = std::path::Path::new("/Library/PrivilegedHelperTools/foxVPN");
+    let hash = std::fs::read_to_string(base.join("client.cdhash")).ok();
+    let owner = std::fs::read_to_string(base.join("client.uid"))
+        .ok()
+        .and_then(|v| v.trim().parse().ok());
+    match self_hash() {
+        Ok(mine) => {
+            binding_error(hash.as_deref(), owner, &mine, unsafe { libc::getuid() }).is_some()
+        }
+        Err(_) => false,
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub fn binding_mismatch() -> bool {
+    false
 }
 pub fn installed() -> bool {
     cfg!(target_os = "macos")
@@ -124,10 +214,16 @@ pub fn self_hash() -> Result<String, String> {
 }
 #[cfg(target_os = "macos")]
 pub fn request(request: &Request) -> Result<Response, String> {
+    request_with(request, std::time::Duration::from_secs(40))
+}
+#[cfg(target_os = "macos")]
+fn request_with(
+    request: &Request,
+    read_timeout: std::time::Duration,
+) -> Result<Response, String> {
     use std::{
         io::{Read, Write},
         os::unix::net::UnixStream,
-        time::Duration,
     };
     if installed() {
         let base = std::path::Path::new("/Library/PrivilegedHelperTools/foxVPN");
@@ -149,10 +245,10 @@ pub fn request(request: &Request) -> Result<Response, String> {
         })
     })?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(40)))
+        .set_read_timeout(Some(read_timeout))
         .map_err(|_| crate::text("helper_ipc"))?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
+        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .map_err(|_| crate::text("helper_ipc"))?;
     let mut bytes = serde_json::to_vec(request).map_err(|_| crate::text("helper_ipc"))?;
     bytes.push(b'\n');
@@ -272,4 +368,41 @@ pub fn create_installer(resources: &std::path::Path) -> Result<std::path::PathBu
     let _ = fs::remove_dir_all(stage);
     let _ = fs::remove_dir_all(scripts);
     Ok(pkg)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn restarting_component_is_not_reported_as_outdated() {
+        // Installing the package restarts the daemon; that must only mean "wait".
+        assert_eq!(classify(true, false, None), Probe::Starting);
+        assert_eq!(classify(true, false, Some(true)), Probe::Ready);
+        // A stale binding or an older protocol/version really needs a reinstall.
+        assert_eq!(classify(true, true, None), Probe::Stale);
+        assert_eq!(classify(true, false, Some(false)), Probe::Stale);
+        // A stale binding stays stale even if the daemon still answers.
+        assert_eq!(classify(true, true, Some(true)), Probe::Stale);
+        assert_eq!(classify(false, false, None), Probe::Missing);
+        assert!(START_WAIT >= std::time::Duration::from_secs(5));
+    }
+    #[test]
+    fn binding_error_separates_owner_mismatch_from_stale_hash() {
+        assert_eq!(binding_error(Some("aa"), Some(501), "aa", 501), None);
+        assert_eq!(
+            binding_error(Some("aa"), Some(502), "aa", 501),
+            Some("helper_owner")
+        );
+        assert_eq!(
+            binding_error(Some("aa"), Some(501), "bb", 501),
+            Some("helper_upgrade")
+        );
+        assert_eq!(
+            binding_error(None, Some(501), "aa", 501),
+            Some("helper_upgrade")
+        );
+        assert_eq!(
+            binding_error(Some("aa"), None, "aa", 501),
+            Some("helper_upgrade")
+        );
+    }
 }

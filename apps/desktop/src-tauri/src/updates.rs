@@ -118,6 +118,9 @@ pub struct Info {
     auto_check: bool,
     skipped_version: Option<String>,
     helper_required: bool,
+    /// The installed component is current but its daemon is still starting or
+    /// restarting. This must not be presented as "update the component".
+    helper_starting: bool,
     error: Option<String>,
 }
 pub fn exit_allowed(installing: bool, code: Option<i32>) -> bool {
@@ -138,13 +141,18 @@ pub async fn update_state(
     let current = app.package_info().version.to_string();
     let pending = prefs.pending_version.as_deref() == Some(&current);
     let migration = pending || smart_vpn_engine::network_helper::installed();
-    let ready = if migration {
-        tauri::async_runtime::spawn_blocking(|| smart_vpn_engine::network_helper::ready())
-            .await
-            .unwrap_or(false)
+    let component = if migration {
+        // The package restarts the daemon, so a check that runs right after an
+        // install waits briefly instead of reporting an outdated component.
+        tauri::async_runtime::spawn_blocking(|| {
+            smart_vpn_engine::network_helper::probe(smart_vpn_engine::network_helper::START_WAIT)
+        })
+        .await
+        .unwrap_or(smart_vpn_engine::network_helper::Probe::Starting)
     } else {
-        true
+        smart_vpn_engine::network_helper::Probe::Ready
     };
+    let ready = component == smart_vpn_engine::network_helper::Probe::Ready;
     if pending && ready {
         prefs.pending_version = None;
         let _ = state.write(&prefs);
@@ -154,7 +162,12 @@ pub async fn update_state(
         current,
         auto_check: prefs.auto_check,
         skipped_version: prefs.skipped_version,
-        helper_required: migration && !ready,
+        helper_required: matches!(
+            component,
+            smart_vpn_engine::network_helper::Probe::Stale
+                | smart_vpn_engine::network_helper::Probe::Missing
+        ),
+        helper_starting: component == smart_vpn_engine::network_helper::Probe::Starting,
         error,
     })
 }

@@ -209,7 +209,7 @@ fn import_servers_state(text: String, s: &State) -> Result<ImportReport, String>
     if text.len() > 4_000_000 {
         return Err(smart_vpn_engine::text("message_313").into());
     }
-    edit(&s, |p| {
+    edit(s, |p| {
         let r = servers::import(&text, &mut p.servers);
         if p.selected.is_none() {
             p.selected = p.servers.first().map(|s| s.id.clone())
