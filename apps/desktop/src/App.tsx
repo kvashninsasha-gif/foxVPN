@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
 import {readText,writeText} from '@tauri-apps/plugin-clipboard-manager';
@@ -21,16 +21,20 @@ export function App(){
  useEffect(()=>watchTheme(theme),[theme]);
  const [data,setData]=useState(initial),[tab,setTab]=useState('overview'),[busy,setBusy]=useState(''),[notice,setNotice]=useState(''),[error,setError]=useState(false),[modal,setModal]=useState(''),[importText,setImportText]=useState(''),[report,setReport]=useState<{added:number;duplicates:number;errors:string[]}|null>(null),[query,setQuery]=useState(''),[group,setGroup]=useState(''),[favoriteOnly,setFavoriteOnly]=useState(false),[rules,setRules]=useState<Rule[]>([]),[domain,setDomain]=useState(''),[route,setRoute]=useState('vpn'),[checkDomain,setCheckDomain]=useState(''),[decision,setDecision]=useState<{domain:string;route:string;reason:string}|null>(null),[prefs,setPrefs]=useState(initial.profile.settings),[autostart,setAutostart]=useState(false),[subName,setSubName]=useState(''),[subUrl,setSubUrl]=useState(''),[qr,setQr]=useState(''),[menu,setMenu]=useState(''),[manual,setManual]=useState({name:'',address:'',port:'443',uuid:'',security:'reality',transport:'tcp',sni:'',pbk:'',sid:'',flow:'',path:'/',host:'',serviceName:''}),[editing,setEditing]=useState<Server|null>(null),[rename,setRename]=useState(''),[renameGroup,setRenameGroup]=useState(''),[traffic,setTraffic]=useState(emptyTraffic),[loading,setLoading]=useState(native);
  const [metricDraft,setMetricDraft]=useState<number|null>(null);
+ // A failed connect attempt can be restored by the helper a moment later. The
+ // notice for it must not outlive the failure once the tunnel is up again.
+ const connectionFailure=useRef(false);
  const p=data.profile,selected=p.servers.find(s=>s.id===p.selected),connected=data.status==='connected',active=data.status!=='disconnected';
  async function refresh(){if(!native)return;const value=await call<Snapshot>('snapshot');setData(value);setRules(value.profile.rules);setPrefs(value.profile.settings);return value}
- function toast(message:string,failed=false){setNotice(message);setError(failed)}
- async function run(key:string,fn:()=>Promise<void>){if(busy)return;setBusy(key);setNotice('');try{await fn();await refresh()}catch(e){toast(e instanceof Error?e.message:String(e),true)}finally{setBusy('')}}
+ function toast(message:string,failed=false,action=''){setNotice(message);setError(failed);connectionFailure.current=failed&&['connect','tun-setup','proxy-setup'].includes(action)}
+ async function run(key:string,fn:()=>Promise<void>){if(busy)return;setBusy(key);setNotice('');try{await fn();await refresh()}catch(e){toast(e instanceof Error?e.message:String(e),true,key)}finally{setBusy('')}}
  useEffect(()=>{let alive=true;let disposers:(()=>void)[]=[];(async()=>{if(native){try{const first=await refresh();if(first?.profile.settings.auto_connect&&first.connection_plan==='needs_proxy_consent')setModal('proxy');setAutostart(await isEnabled());for(const e of ['servers-updated','metrics-updated','operation-error','connection-setup-required']){const dispose=await listen<string>(e,event=>{if(!alive)return;if(e==='operation-error')toast(String(event.payload),true);if(e==='connection-setup-required'){setNotice('');setModal(event.payload==='needs_server'?'import':'proxy')}if(e==='metrics-updated'){void call<Snapshot>('snapshot').then(value=>{if(alive)setData(value)}).catch(()=>{});}else void refresh().catch(()=>{});});if(alive)disposers.push(dispose);else dispose();}}catch(e){toast(String(e),true)}finally{setLoading(false)}}})();return()=>{alive=false;disposers.forEach(f=>f())}},[]);
  useEffect(()=>{if(!native)return;let alive=true;const stop=startVisiblePolling(async(resumed)=>{
   if(resumed){const value=await call<Snapshot>('snapshot');if(alive)setData(value);}
   const value=await call<{status:string;proxy_port:number|null;logs:string[]|null;connection_error:string|null}>('runtime',{includeLogs:tab==='settings'});
   if(!alive)return;
   setData(previous=>({...previous,status:value.status,proxy_port:value.proxy_port,logs:value.logs??previous.logs,connection_error:value.connection_error}));
+  if(value.status==='connected'&&connectionFailure.current){connectionFailure.current=false;setNotice('');setError(false)}
   if(value.status==='connected'&&(tab==='overview'||tab==='statistics')){const traffic=await call<Traffic>('traffic');if(alive)setTraffic(traffic);}
   else if(value.status!=='connected')setTraffic(emptyTraffic);
  },data.status==='connected'?3000:10000);return()=>{alive=false;stop();}},[tab,data.status]);
