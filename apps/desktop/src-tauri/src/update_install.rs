@@ -246,7 +246,7 @@ mod tests {
         let app = root.path().join("foxVPN.app");
         fs::create_dir(&app).unwrap();
         fs::write(app.join("original"), "kept").unwrap();
-        assert!(prepare(b"invalid gzip", &app, "0.1.7").is_err());
+        assert!(prepare(b"invalid gzip", &app, "0.1.8").is_err());
         assert!(app.join("original").exists());
     }
 }
@@ -271,7 +271,7 @@ mod artifact_test {
         let config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.macos.conf.json")).unwrap();
         let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-        context.package_info_mut().version = "0.1.7".parse().unwrap();
+        context.package_info_mut().version = "0.1.8".parse().unwrap();
         context
             .config_mut()
             .plugins
@@ -312,7 +312,7 @@ mod artifact_test {
         fs::write(target.join("old-copy"), b"preserved").unwrap();
         let previous_version = if let Ok(previous) = std::env::var("FOXVPN_TEST_PREVIOUS_ARTIFACT")
         {
-            let previous_version = "0.1.7";
+            let previous_version = "0.1.8";
             prepare(&fs::read(previous).unwrap(), &target, previous_version)
                 .unwrap()
                 .commit()
@@ -363,7 +363,7 @@ mod artifact_test {
                 }
             });
             let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-            context.package_info_mut().version = "0.1.7".parse().unwrap();
+            context.package_info_mut().version = "0.1.8".parse().unwrap();
             context
                 .config_mut()
                 .plugins
@@ -381,7 +381,7 @@ mod artifact_test {
                 .build()
                 .unwrap();
             let update = updater.check().await.unwrap().unwrap();
-            assert_eq!(update.current_version, "0.1.7");
+            assert_eq!(update.current_version, "0.1.8");
             if mode == "cancel" {
                 let mut future = Box::pin(update.download(|_, _| {}, || {}));
                 tokio::select! { _=tokio::time::sleep(std::time::Duration::from_millis(50))=>{}, result=&mut future=>panic!("unexpected early completion {result:?}") }

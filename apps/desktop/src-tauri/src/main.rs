@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod file_actions;
+mod metrics;
 #[cfg(target_os = "macos")]
 mod update_install;
 mod updates;
@@ -66,6 +67,7 @@ struct State {
     binary: PathBuf,
     status: Arc<Mutex<String>>,
     gate: Arc<Mutex<()>>,
+    measurements: Arc<Mutex<()>>,
     wanted: Arc<std::sync::atomic::AtomicBool>,
 }
 #[derive(Serialize)]
@@ -534,6 +536,10 @@ async fn stop(s: tauri::State<'_, State>) -> Result<(), String> {
         .map_err(|_| smart_vpn_engine::text("message_322"))?
 }
 fn test_impl(s: &State, id: &str, speed: bool) -> Result<latency::Measurement, String> {
+    let _measurement = s
+        .measurements
+        .lock()
+        .map_err(|_| smart_vpn_engine::text("message_323"))?;
     let server = s
         .profile
         .lock()
@@ -799,6 +805,7 @@ fn main() {
                 binary,
                 status: Arc::new(Mutex::new("disconnected".into())),
                 gate: Arc::new(Mutex::new(())),
+                measurements: Arc::new(Mutex::new(())),
                 wanted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
             if let Ok(response) = smart_vpn_engine::network_helper::request(
@@ -817,6 +824,7 @@ fn main() {
                 *state.status.lock().unwrap() = "unknown".into();
             }
             app.manage(state.clone());
+            metrics::start(state.clone(), app.handle().clone());
             let show = MenuItem::with_id(app, "show", t("open_app"), true, None::<&str>)?;
             let connect = MenuItem::with_id(app, "connect", t("connect"), true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", t("disconnect"), true, None::<&str>)?;

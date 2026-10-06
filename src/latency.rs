@@ -30,7 +30,11 @@ pub fn measure(binary: &Path, s: &Server, speed: bool) -> Result<Measurement, St
         ..Settings::default()
     };
     let process = CoreProcess::start(binary, s, &settings, &[])?;
-    let c = client(process.proxy_port)?;
+    measure_port(process.proxy_port, if speed { 10_000_000 } else { 0 })
+}
+/// Measure the existing connection, without starting another tunnel.
+pub fn measure_port(port: u16, download_bytes: u64) -> Result<Measurement, String> {
+    let c = client(port)?;
     let mut samples = vec![];
     for _ in 0..3 {
         let now = Instant::now();
@@ -49,20 +53,22 @@ pub fn measure(binary: &Path, s: &Server, speed: bool) -> Result<Measurement, St
         download_mbps: None,
         bytes: 0,
     };
-    if speed {
+    if download_bytes > 0 {
         let now = Instant::now();
         let mut response = c
-            .get("https://speed.cloudflare.com/__down?bytes=10000000")
+            .get(format!(
+                "https://speed.cloudflare.com/__down?bytes={download_bytes}"
+            ))
             .send()
             .map_err(|e| crate::vpn::friendly_error(&e.to_string()))?
             .error_for_status()
             .map_err(|_| crate::text("message_251"))?;
         let bytes = std::io::copy(
-            &mut std::io::Read::take(&mut response, 10_000_001),
+            &mut std::io::Read::take(&mut response, download_bytes + 1),
             &mut std::io::sink(),
         )
         .map_err(|_| crate::text("message_252"))?;
-        if bytes != 10_000_000 {
+        if bytes != download_bytes {
             return Err(crate::text("message_253").into());
         }
         result.bytes = bytes;

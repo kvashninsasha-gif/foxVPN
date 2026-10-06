@@ -6,3 +6,28 @@
 .brand-icon{width:46px;height:46px;border-radius:14px;flex-shrink:0;box-shadow:0 3px 8px #172a4310}.brand-icon img{width:36px;height:36px;display:block}.brand b{font-size:23px;font-weight:750;letter-spacing:-.9px;color:#172a43}.connection-mark{width:47px;height:47px;display:block}
 
 .update-backdrop{z-index:30}.update-version{font-size:16px;color:#172a43;line-height:1.7}.update-notes{white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fb;border-radius:10px;padding:16px;max-height:220px;overflow:auto;font-size:12px;line-height:1.8;color:#61728a}.update-progress{display:grid;gap:10px;padding:15px 0;color:#61728a;font-size:12px}.update-progress progress{width:100%;accent-color:#b24a1c}.update-dialog .footnote{line-height:1.8}
+
+.metrics-note{font-size:10px;line-height:1.7;color:#61728d;margin:0;padding:12px 29px;border-top:1px solid #e7ebf3}
+:root[data-theme=dark]{color:#e5edf7;background:#111821;color-scheme:dark}
+[data-theme=dark] aside,[data-theme=dark] .panel,[data-theme=dark] .modal,[data-theme=dark] .secondary,[data-theme=dark] .mode-card,[data-theme=dark] .connection-metrics,[data-theme=dark] .search,[data-theme=dark] .context-menu,[data-theme=dark] .proxy-info{background:#1b2532;border-color:#354255}
+[data-theme=dark] header{background:#17202ded;border-color:#354255}
+[data-theme=dark] .connection-card{background:linear-gradient(120deg,#1b2532,#202c3c);border-color:#354255}
+[data-theme=dark] input,[data-theme=dark] select,[data-theme=dark] textarea{background:#15202c;color:#e5edf7;border-color:#46556b}
+[data-theme=dark] .search input{background:transparent}
+[data-theme=dark] th,[data-theme=dark] .panel pre,[data-theme=dark] .update-notes,[data-theme=dark] .import-report,[data-theme=dark] .proxy-dialog-server{background:#15202c;color:#bdcbe0;border-color:#354255}
+[data-theme=dark] td,[data-theme=dark] .switch-row,[data-theme=dark] .vault,[data-theme=dark] .routes-summary>div,[data-theme=dark] .connection-metrics div+div,[data-theme=dark] .metrics-note{border-color:#354255}
+[data-theme=dark] .brand b,[data-theme=dark] .mode-card b,[data-theme=dark] .security-card h3,[data-theme=dark] .server-label b,[data-theme=dark] .switch-row b,[data-theme=dark] .vault b,[data-theme=dark] .breadcrumbs b,[data-theme=dark] .proxy-dialog-server b,[data-theme=dark] .update-version{color:#e5edf7}
+[data-theme=dark] td,[data-theme=dark] .nav,[data-theme=dark] .mode-card,[data-theme=dark] .connection-top p,[data-theme=dark] .heading p,[data-theme=dark] .metrics-note,[data-theme=dark] .footnote,[data-theme=dark] .proxy-dialog-list,[data-theme=dark] .proxy-dialog-intro{color:#b4c2d6}
+[data-theme=dark] .nav:hover,[data-theme=dark] .secondary:hover,[data-theme=dark] .icon-button:hover,[data-theme=dark] .selected-row{background:#28384b}
+[data-theme=dark] .nav.active,[data-theme=dark] .mode-card.chosen,[data-theme=dark] .route-icon.purple{background:#38281f;color:#ffb47e}
+[data-theme=dark] .chosen b,[data-theme=dark] .text-button{color:#ffb47e}
+[data-theme=dark] .nav small{background:#593b27;color:#ffd7b8}
+[data-theme=dark] .orb{background:#28364a;border-color:#243044}
+[data-theme=dark] .orb.online,[data-theme=dark] .good,[data-theme=dark] .success,[data-theme=dark] .route-icon{background:#173d32;border-color:#244b3e;color:#8dddb9}
+[data-theme=dark] .bad,[data-theme=dark] .danger{background:#44252c;color:#ffb7bd}
+[data-theme=dark] .banner,[data-theme=dark] .warning,[data-theme=dark] .unavailable-feature{background:#3a3020;color:#edcd95;border-color:#645035}
+[data-theme=dark] .muted{background:#2a3545;color:#c3cede}
+[data-theme=dark] .radio{border-color:#71829a}
+[data-theme=dark] .switch-row input{background:#526178}
+[data-theme=dark] .switch-row input:checked{background:#bd4b17}
+@media(max-width:800px){.switch-row{flex-wrap:wrap;gap:12px}.unavailable-feature{white-space:normal;max-width:100%}}
