@@ -31,9 +31,9 @@ export function App(){
  useEffect(()=>{let alive=true;let disposers:(()=>void)[]=[];(async()=>{if(native){try{const first=await refresh();if(first?.profile.settings.auto_connect&&first.connection_plan==='needs_proxy_consent')setModal('proxy');setAutostart(await isEnabled());for(const e of ['servers-updated','metrics-updated','operation-error','connection-setup-required']){const dispose=await listen<string>(e,event=>{if(!alive)return;if(e==='operation-error')toast(String(event.payload),true);if(e==='connection-setup-required'){setNotice('');setModal(event.payload==='needs_server'?'import':'proxy')}if(e==='metrics-updated'){void call<Snapshot>('snapshot').then(value=>{if(alive)setData(value)}).catch(()=>{});}else void refresh().catch(()=>{});});if(alive)disposers.push(dispose);else dispose();}}catch(e){toast(String(e),true)}finally{setLoading(false)}}})();return()=>{alive=false;disposers.forEach(f=>f())}},[]);
  useEffect(()=>{if(!native)return;let alive=true;const stop=startVisiblePolling(async(resumed)=>{
   if(resumed){const value=await call<Snapshot>('snapshot');if(alive)setData(value);}
-  const value=await call<{status:string;proxy_port:number|null;logs:string[]|null;connection_error:string|null}>('runtime',{includeLogs:tab==='settings'});
+  const value=await call<{status:string;proxy_port:number|null;logs:string[]|null;connection_error:string|null;active_server_id:string|null}>('runtime',{includeLogs:tab==='settings'});
   if(!alive)return;
-  setData(previous=>({...previous,status:value.status,proxy_port:value.proxy_port,logs:value.logs??previous.logs,connection_error:value.connection_error}));
+  setData(previous=>({...previous,status:value.status,profile:value.status==='connected'&&value.active_server_id?{...previous.profile,selected:value.active_server_id}:previous.profile,proxy_port:value.proxy_port,logs:value.logs??previous.logs,connection_error:value.connection_error}));
   if(value.status==='connected'&&connectionFailure.current){connectionFailure.current=false;setNotice('');setError(false)}
   if(value.status==='connected'&&(tab==='overview'||tab==='statistics')){const traffic=await call<Traffic>('traffic');if(alive)setTraffic(traffic);}
   else if(value.status!=='connected')setTraffic(emptyTraffic);

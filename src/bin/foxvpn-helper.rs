@@ -54,6 +54,22 @@ mod daemon {
         pause_until: Instant,
         last_health: Instant,
         healthy: bool,
+        failures: u32,
+        candidate: usize,
+    }
+    fn candidate(request: &StartRequest, index: usize) -> &smart_vpn_engine::servers::Server {
+        if request.settings.failover {
+            request
+                .reserves
+                .get(index.saturating_sub(1))
+                .filter(|_| index > 0)
+                .unwrap_or(&request.server)
+        } else {
+            &request.server
+        }
+    }
+    fn retry_delay(failures: u32) -> Duration {
+        Duration::from_secs((3u64 << failures.min(5)).min(60))
     }
     fn message(key: &str) -> String {
         smart_vpn_engine::text(key).into()
@@ -160,6 +176,11 @@ mod daemon {
                 running: running && self.healthy,
                 wanted: self.saved.wanted.is_some(),
                 error: self.error.clone(),
+                active_server_id: self
+                    .saved
+                    .wanted
+                    .as_ref()
+                    .map(|r| candidate(r, self.candidate).id.clone()),
                 kill_switch: self.saved.token.is_some(),
                 interface: if running {
                     "utun99".into()
@@ -264,34 +285,30 @@ mod daemon {
             if !request.settings.tun || request.rules.len() > 5000 {
                 return Err(message("helper_invalid"));
             }
+            if request.reserves.len() > 31 {
+                return Err(message("helper_invalid"));
+            }
+            request.reserves.retain(|server| !request.settings.favorites_only || server.favorite);
             let profile = smart_vpn_engine::settings::Profile {
                 selected: Some(request.server.id.clone()),
-                servers: vec![request.server.clone()],
+                servers: std::iter::once(request.server.clone())
+                    .chain(request.reserves.iter().cloned())
+                    .collect(),
                 settings: request.settings.clone(),
                 rules: request.rules.clone(),
                 ..Default::default()
             };
             profile.validate()?;
-            // Resolve only the VPN endpoint before installing the DNS/traffic guard.
-            if request.server.address.parse::<std::net::IpAddr>().is_err() {
-                use std::net::ToSocketAddrs;
-                let ip = (request.server.address.as_str(), request.server.port)
-                    .to_socket_addrs()
-                    .map_err(|_| message("message_270"))?
-                    .next()
-                    .ok_or_else(|| message("message_270"))?
-                    .ip();
-                if request.server.security != "none" && !request.server.params.contains_key("sni") {
-                    request
-                        .server
-                        .params
-                        .insert("sni".into(), request.server.address.clone());
-                }
-                request.server.address = ip.to_string();
-            }
+            self.failures = 0;
+            self.candidate = 0;
             self.saved.wanted = Some(request);
             save(&self.saved)?;
-            self.restart()
+            let result = self.restart();
+            self.epoch = unsafe { fox_network_epoch() };
+            if result.is_err() {
+                self.failures = 1;
+            }
+            result
         }
         fn restart(&mut self) -> Result<(), String> {
             self.last = Instant::now();
@@ -324,7 +341,7 @@ mod daemon {
             };
             let mut core = CoreProcess::start_for_uid(
                 &PathBuf::from(format!("{NETWORK}/core")),
-                &req.server,
+                candidate(&req, self.candidate),
                 &settings,
                 &req.rules,
                 settings.proxy_port,
@@ -363,6 +380,7 @@ mod daemon {
             self.core = Some(core);
             self.error = None;
             self.healthy = true;
+            self.failures = 0;
             self.last_health = Instant::now();
             save(&self.saved)?;
             self.epoch = unsafe { fox_network_epoch() };
@@ -389,12 +407,29 @@ mod daemon {
                 .as_ref()
                 .is_some_and(|r| r.settings.restore)
                 && (dead || changed || self.core.is_none() || !self.healthy)
-                && self.last.elapsed() >= Duration::from_secs(3)
+                && self.last.elapsed() >= retry_delay(self.failures)
                 && Instant::now() >= self.pause_until
             {
+                if self
+                    .saved
+                    .wanted
+                    .as_ref()
+                    .is_some_and(|r| r.settings.failover)
+                    && !changed
+                {
+                    let count = self
+                        .saved
+                        .wanted
+                        .as_ref()
+                        .map_or(1, |r| r.reserves.len() + 1);
+                    self.candidate = (self.candidate + 1) % count;
+                }
+                self.epoch = unsafe { fox_network_epoch() };
                 if let Err(error) = self.restart() {
+                    self.failures = self.failures.saturating_add(1);
                     self.error = Some(error);
                 }
+                self.epoch = unsafe { fox_network_epoch() };
             }
         }
     }
@@ -492,6 +527,8 @@ mod daemon {
             pause_until: Instant::now(),
             last_health: Instant::now(),
             healthy: false,
+            failures: 0,
+            candidate: 0,
         };
         // An administrator-approved owner change never inherits another user's
         // server credentials, API secret or reconnecting session.
@@ -610,6 +647,29 @@ mod daemon {
             );
         }
         #[test]
+        fn retry_backoff_is_bounded() {
+            assert_eq!(retry_delay(0).as_secs(), 3);
+            assert_eq!(retry_delay(1).as_secs(), 6);
+            assert_eq!(retry_delay(4).as_secs(), 48);
+            assert_eq!(retry_delay(u32::MAX).as_secs(), 60);
+        }
+        #[test]
+        fn disabled_failover_never_uses_reserves() {
+            let first = smart_vpn_engine::servers::Server::parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=none&type=tcp#first").unwrap();
+            let second = smart_vpn_engine::servers::Server::parse("vless://11111111-1111-4111-8111-111111111111@backup.example.com:443?security=none&type=tcp#second").unwrap();
+            let mut request = StartRequest {
+                server: first.clone(),
+                reserves: vec![second.clone()],
+                settings: Default::default(),
+                rules: vec![],
+            };
+            assert_eq!(candidate(&request, 0).id, first.id);
+            assert_eq!(candidate(&request, 1).id, second.id);
+            request.settings.failover = false;
+            assert_eq!(candidate(&request, 1).id, first.id);
+            assert_eq!(request.server.address, "example.com");
+        }
+        #[test]
         fn guard_uses_a_dedicated_core_identity_and_blocks_both_ip_families() {
             let rules = guard_rules();
             assert!(rules.contains(&format!("user {CORE_UID}")));
@@ -626,6 +686,7 @@ mod daemon {
                 .unwrap(),
                 settings: smart_vpn_engine::settings::Settings::default(),
                 rules: vec![],
+                reserves: vec![],
             };
             assert!(recovery_allowed(&request));
             request.settings.restore = false;

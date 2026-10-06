@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct StartRequest {
     pub server: Server,
+    #[serde(default)]
+    pub reserves: Vec<Server>,
     pub settings: Settings,
     pub rules: Vec<Rule>,
 }
@@ -38,8 +40,9 @@ pub struct Status {
     pub error: Option<String>,
     pub kill_switch: bool,
     pub interface: String,
+    pub active_server_id: Option<String>,
 }
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 impl Status {
     pub fn compatible(&self) -> bool {
         self.protocol == PROTOCOL && self.helper_version == env!("CARGO_PKG_VERSION")
@@ -217,10 +220,7 @@ pub fn request(request: &Request) -> Result<Response, String> {
     request_with(request, std::time::Duration::from_secs(40))
 }
 #[cfg(target_os = "macos")]
-fn request_with(
-    request: &Request,
-    read_timeout: std::time::Duration,
-) -> Result<Response, String> {
+fn request_with(request: &Request, read_timeout: std::time::Duration) -> Result<Response, String> {
     use std::{
         io::{Read, Write},
         os::unix::net::UnixStream,

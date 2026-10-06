@@ -130,6 +130,7 @@ struct RuntimeSnapshot {
     proxy_port: Option<u16>,
     logs: Option<Vec<String>>,
     connection_error: Option<String>,
+    active_server_id: Option<String>,
 }
 #[tauri::command]
 async fn runtime(
@@ -141,11 +142,13 @@ async fn runtime(
         let tun = s.profile.lock().unwrap().settings.tun;
         let mut core = s.core.lock().unwrap();
         let mut connection_error = None;
+        let mut active_server_id = None;
         if tun || core.as_ref().is_some_and(|c| c.local.is_none()) {
             match smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Status,
             ) {
                 Ok(response) => {
+                    active_server_id = response.status.active_server_id.clone();
                     connection_error = response.status.error.clone();
                     if !response.status.compatible() {
                         connection_error = Some(smart_vpn_engine::text("helper_upgrade").into());
@@ -187,7 +190,7 @@ async fn runtime(
                 }
             }
         }
-        RuntimeSnapshot {
+        let result = RuntimeSnapshot {
             status: s.status.lock().unwrap().clone(),
             proxy_port: core.as_ref().map(|c| c.proxy_port),
             logs: include_logs.then(|| {
@@ -196,10 +199,26 @@ async fn runtime(
                     .unwrap_or_default()
             }),
             connection_error,
+            active_server_id,
+        };
+        drop(core);
+        if result.status == "connected" {
+            if let Some(id) = result.active_server_id.as_ref() {
+                let needs_update = s.profile.lock().unwrap().selected.as_ref() != Some(id);
+                if needs_update {
+                    edit(&s, |p| {
+                        if p.settings.tun && p.servers.iter().any(|server| &server.id == id) {
+                            p.selected = Some(id.clone());
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
         }
+        Ok(result)
     })
     .await
-    .map_err(|_| smart_vpn_engine::text("helper_ipc").into())
+    .map_err(|_| smart_vpn_engine::text("helper_ipc").to_string())?
 }
 #[tauri::command]
 fn import_servers(text: String, s: tauri::State<State>) -> Result<ImportReport, String> {
@@ -416,6 +435,15 @@ fn connect_impl(s: &State) -> Result<u16, String> {
                 &smart_vpn_engine::network_helper::Request::Start(Box::new(
                     smart_vpn_engine::network_helper::StartRequest {
                         server: server.clone(),
+                        reserves: p
+                            .servers
+                            .iter()
+                            .filter(|v| {
+                                v.id != server.id && (!p.settings.favorites_only || v.favorite)
+                            })
+                            .take(31)
+                            .cloned()
+                            .collect(),
                         settings: p.settings.clone(),
                         rules: p.rules.clone(),
                     },

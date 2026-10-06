@@ -111,13 +111,18 @@ pub fn config(
             v
         }
     };
+    let bootstrap = if settings.tun {
+        json!({"type":"https","tag":"bootstrap","server":ip,"tls":{"server_name":name},"detour":"direct"})
+    } else {
+        json!({"type":"local","tag":"bootstrap"})
+    };
     let mut inbounds =
         vec![json!({"type":"mixed","tag":"proxy-in","listen":"127.0.0.1","listen_port":port})];
     if settings.tun {
         inbounds.push(json!({"type":"tun","tag":"tun-in","address":["172.29.0.1/30","fdfe:dcba:9876::1/126"],"auto_route":true,"strict_route":true,"stack":"mixed"}));
     }
     Ok(
-        json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[{"type":"local","tag":"bootstrap"},dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}}),
+        json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}}),
     )
 }
 pub fn friendly_error(raw: &str) -> String {
