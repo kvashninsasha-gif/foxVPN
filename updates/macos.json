@@ -1,11 +1,11 @@
 {
-  "version": "0.1.12",
-  "notes": "foxVPN 0.1.12\n\nОкно «Обновите сетевой компонент» теперь закрывается само после установки.\n\nРаньше приложение не узнавало о завершении системного установщика: состояние\nкомпонента пересчитывалось только при запуске и по кнопке «Проверить компонент».\nПоэтому после успешной установки окно оставалось на экране с сообщением\n«Завершите установку и нажмите Проверить компонент».\n\nТеперь после нажатия «Открыть установщик» приложение ждёт результат: оно\nопрашивает состояние компонента каждые 2,5 секунды (до минуты) и, как только\nкомпонент стал актуальным, закрывает окно само, сообщает об успехе и обновляет\nинтерфейс, чтобы сразу можно было подключиться.\n\nЕсли установку отменить, окно вернётся к предложению установить компонент.\n\nПосле установки этой сборки macOS один раз попросит подтвердить сетевой\nкомпонент: CDHash приложения изменился. Это ожидаемое следствие локальной\nad-hoc подписи. Профили, серверы и настройки сохраняются.\n\nПредварительная сборка macOS Apple Silicon. Developer ID и нотарификация\nотсутствуют.",
-  "pub_date": "2026-10-06T13:07:17.127085Z",
+  "version": "0.1.13",
+  "notes": "foxVPN 0.1.13\n\nСообщение о неудачном подключении больше не остаётся после восстановления связи.\n\nРаньше единственная неудачная проверка при подключении показывала красное\nсообщение «Не удалось подключиться к серверу», а сетевой компонент через\nнесколько секунд поднимал туннель. Приложение показывало «Подключено», но\nсообщение о неудаче висело на экране, пока его не закроют вручную.\n\nТеперь сообщение снимается само, как только очередная проверка показывает, что\nVPN действительно подключён. Сообщения о других действиях это не затрагивает.\n\nПосле установки этой сборки macOS один раз попросит подтвердить сетевой\nкомпонент: CDHash приложения изменился. Это ожидаемое следствие локальной\nad-hoc подписи. Профили, серверы и настройки сохраняются.\n\nПредварительная сборка macOS Apple Silicon. Developer ID и нотарификация\nотсутствуют.",
+  "pub_date": "2026-10-06T13:18:18.536508Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.12/foxVPN-0.1.12-macOS-arm64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbTM0UkJBSWNaaHlIMXlxT0pvbmlQbEpEeDc4VUs0QXdneE9MYkxhS2swRlJ1emQ5M2l3M0xYZVUyblBUcGp2U2hkMCtnb0MrOXVkcXJxcitOcVZ2SFFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMjkyMDM3CWZpbGU6Zm94VlBOLTAuMS4xMi1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjEyCk5uOE9adTdqMlNzbTlDcHdFOHRQa2JRY1ZxYWFBUTU4QllvWUNidjcvZEhWZVdUeHpnK283VFNoMDBVaHBSTHQyS1BxK3hOQVdkUCsrMjUrV25vN0NnPT0K"
+      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.13/foxVPN-0.1.13-macOS-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbXh0WHlYRkROMzdwdEhDQjZJVTNRcS8yVU5aeXhvVjNtc2Rlb0lQZUtIQ3VidDA5L3dkMnRQbHh2ZG56MExFTFYxaCtyNjJuWHZaTTdwcVNNQ2x1bFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMjkyNjk4CWZpbGU6Zm94VlBOLTAuMS4xMy1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjEzCjBZOC9qRm9OYmVtZkJzWldNNXdxYmZpUWMrbGtEeVdZeVNsWms3d3pzQndOS3gyN2hlQ0lxaWZpQk1lQk83WUpXVCtCaU83T011NVBCSUdrejdDcUJBPT0K"
     }
   }
 }
