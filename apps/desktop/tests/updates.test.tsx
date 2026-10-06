@@ -22,6 +22,20 @@ describe('update consent and startup',()=>{
  it('failed signature/download remains visible and never reports success',async()=>{ipc.invoke.mockImplementation(async(c:string)=>{if(c==='update_state')return info;if(c==='check_app_update')return offer;if(c==='install_app_update')throw 'Подпись недействительна';throw Error(c)});mount();await screen.findByRole('dialog');fireEvent.click(screen.getByRole('button',{name:'Обновить',exact:true}));await screen.findByRole('alert');expect(screen.getByText('Подпись недействительна')).toBeTruthy();expect(screen.queryByText('Перезапускаем foxVPN')).toBeNull();await waitFor(()=>expect(refresh).toHaveBeenCalled())});
  it('cancel only calls cancellation while download is active',async()=>{ipc.invoke.mockImplementation(async(c:string)=>{if(c==='update_state')return info;if(c==='check_app_update')return offer;if(c==='install_app_update')return new Promise(()=>{});if(c==='cancel_app_update')return;throw Error(c)});mount();await screen.findByRole('dialog');fireEvent.click(screen.getByRole('button',{name:'Обновить',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Отменить скачивание'}));expect(ipc.invoke).toHaveBeenCalledWith('cancel_app_update')});
  it('network helper asks separately without starting system installer automatically',async()=>{info.auto_check=false;info.helper_required=true;mount();await screen.findByRole('dialog',{name:'Обновите сетевой компонент'});expect(ipc.invoke.mock.calls.some(([c])=>c==='install_network_helper')).toBe(false);fireEvent.click(screen.getByRole('button',{name:'Открыть установщик'}));await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('install_network_helper'))});
+ it('component notice closes itself once the installer finished',async()=>{
+  info.auto_check=false;info.helper_required=true;
+  let calls=0;
+  ipc.invoke.mockImplementation(async(c:string)=>{
+   if(c==='update_state'){calls+=1;return calls>1?{...info,helper_required:false}:{...info}}
+   if(c==='install_network_helper')return;
+   throw Error(c)});
+  mount();await screen.findByRole('dialog',{name:'Обновите сетевой компонент'});
+  fireEvent.click(screen.getByRole('button',{name:'Открыть установщик'}));
+  await waitFor(()=>expect(screen.getAllByText(/проверит компонент автоматически/).length).toBeGreaterThan(0));
+  await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull(),{timeout:6000});
+  expect(screen.getAllByText('Сетевой компонент установлен. Можно подключать VPN.').length).toBeGreaterThan(0);
+  await waitFor(()=>expect(refresh).toHaveBeenCalled());
+ });
  it('restarting component waits instead of demanding a reinstall',async()=>{
   info.auto_check=false;info.helper_starting=true;
   let calls=0;
