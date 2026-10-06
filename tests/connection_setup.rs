@@ -148,3 +148,21 @@ fn proxy_port_rejects_privileged_and_zero_ports() {
         assert!(settings.validate().is_ok());
     }
 }
+
+#[test]
+fn metric_preferences_default_for_legacy_profiles_and_validate_bounds() {
+    let mut settings: smart_vpn_engine::settings::Settings = serde_json::from_str("{}").unwrap();
+    assert!(settings.auto_metrics);
+    assert_eq!(settings.metric_interval, 600);
+    settings.auto_metrics = false;
+    settings.metric_interval = 120;
+    assert!(settings.validate().is_ok());
+    let restored: smart_vpn_engine::settings::Settings =
+        serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+    assert!(!restored.auto_metrics);
+    assert_eq!(restored.metric_interval, 120);
+    settings.metric_interval = 59;
+    assert!(settings.validate().is_err());
+    settings.metric_interval = 3601;
+    assert!(settings.validate().is_err());
+}

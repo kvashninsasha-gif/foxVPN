@@ -1,4 +1,4 @@
-//! Minute measurements use the active proxy and never change connection health.
+//! Two-minute measurements use the active proxy and never change connection health.
 use super::{edit, State};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -12,18 +12,23 @@ struct Connection {
 struct Clock {
     connection: Option<Connection>,
     next: Option<Instant>,
+    interval: Duration,
 }
 impl Clock {
-    fn due(&mut self, current: Option<Connection>, now: Instant) -> bool {
+    fn due(&mut self, current: Option<Connection>, now: Instant, interval: Duration) -> bool {
         if current.is_none() {
             self.connection = None;
             self.next = None;
             return false;
         }
+        if self.interval != interval && self.connection == current {
+            self.next = Some(now + interval);
+        }
+        self.interval = interval;
         let due = self.connection != current || self.next.is_none_or(|next| now >= next);
         self.connection = current;
         if due {
-            self.next = Some(now + Duration::from_secs(60));
+            self.next = Some(now + interval);
         }
         due
     }
@@ -34,7 +39,13 @@ fn connection(s: &State) -> Option<Connection> {
     {
         return None;
     }
-    let id = s.profile.lock().ok()?.selected.clone()?;
+    let id = {
+        let p = s.profile.lock().ok()?;
+        if !p.settings.auto_metrics {
+            return None;
+        }
+        p.selected.clone()?
+    };
     let core = s.core.lock().ok()?;
     let core = core.as_ref()?;
     Some(Connection {
@@ -48,7 +59,17 @@ pub fn start(state: State, app: tauri::AppHandle) {
         let mut clock = Clock::default();
         loop {
             let current = connection(&state);
-            if clock.due(current.clone(), Instant::now()) {
+            let interval = state
+                .profile
+                .lock()
+                .ok()
+                .map(|p| p.settings.metric_interval)
+                .unwrap_or(600);
+            if clock.due(
+                current.clone(),
+                Instant::now(),
+                Duration::from_secs(interval),
+            ) {
                 if let (Some(current), Ok(_measurement)) = (current, state.measurements.try_lock())
                 {
                     let result = smart_vpn_engine::latency::measure_port(current.port, 1_000_000);
@@ -62,6 +83,7 @@ pub fn start(state: State, app: tauri::AppHandle) {
                                 .map_err(|_| "metric state unavailable")?
                                 .as_str()
                                 != "connected"
+                                || !profile.settings.auto_metrics
                                 || profile.selected.as_ref() != Some(&current.id)
                                 || !core.as_ref().is_some_and(|c| {
                                     c.proxy_port == current.port && c.secret == current.token
@@ -93,24 +115,26 @@ pub fn start(state: State, app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn sample(token: &str) -> Connection {
+    fn sample() -> Connection {
         Connection {
             id: "fixture".into(),
             port: 2080,
-            token: token.into(),
+            token: "fixture".into(),
         }
     }
     #[test]
-    fn immediate_then_once_per_minute_and_reconnect_invalidates_identity() {
+    fn interval_changes_pause_and_reconnect_do_not_replay_old_ticks() {
         let now = Instant::now();
         let mut clock = Clock::default();
-        assert!(!clock.due(None, now));
-        assert!(clock.due(Some(sample("a")), now));
-        assert!(!clock.due(Some(sample("a")), now + Duration::from_secs(59)));
-        assert!(clock.due(Some(sample("a")), now + Duration::from_secs(60)));
-        assert!(clock.due(Some(sample("b")), now + Duration::from_secs(61)));
-        assert!(!clock.due(None, now + Duration::from_secs(62)));
-        assert!(clock.due(Some(sample("b")), now + Duration::from_secs(63)));
-        assert!(sample("a") != sample("b"));
+        let ten = Duration::from_secs(600);
+        let two = Duration::from_secs(120);
+        assert!(clock.due(Some(sample()), now, ten));
+        assert!(!clock.due(Some(sample()), now + Duration::from_secs(599), ten));
+        assert!(clock.due(Some(sample()), now + ten, ten));
+        assert!(!clock.due(Some(sample()), now + Duration::from_secs(601), two));
+        assert!(!clock.due(Some(sample()), now + Duration::from_secs(720), two));
+        assert!(clock.due(Some(sample()), now + Duration::from_secs(721), two));
+        assert!(!clock.due(None, now + Duration::from_secs(722), two));
+        assert!(clock.due(Some(sample()), now + Duration::from_secs(723), two));
     }
 }

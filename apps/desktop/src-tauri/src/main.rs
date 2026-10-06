@@ -308,6 +308,18 @@ fn save_rules(rules: Vec<Rule>, s: tauri::State<State>) -> Result<(), String> {
     })
 }
 #[tauri::command]
+fn set_metric_settings(
+    enabled: bool,
+    interval_seconds: u64,
+    s: tauri::State<State>,
+) -> Result<(), String> {
+    edit(&s, |p| {
+        p.settings.auto_metrics = enabled;
+        p.settings.metric_interval = interval_seconds;
+        p.settings.validate()
+    })
+}
+#[tauri::command]
 fn save_settings(settings: Settings, s: tauri::State<State>) -> Result<(), String> {
     if s.core.lock().unwrap().is_some() {
         return Err(smart_vpn_engine::text("message_319").into());
@@ -1143,6 +1155,7 @@ fn main() {
             server_uri,
             save_rules,
             save_settings,
+            set_metric_settings,
             check_route,
             connect,
             prepare_proxy,

@@ -18,6 +18,8 @@ pub struct Settings {
     pub start_minimized: bool,
     pub restore: bool,
     pub health_interval: u64,
+    pub auto_metrics: bool,
+    pub metric_interval: u64,
     pub failover: bool,
     pub favorites_only: bool,
     pub strategy: String,
@@ -38,6 +40,8 @@ impl Default for Settings {
             start_minimized: false,
             restore: true,
             health_interval: 30,
+            auto_metrics: true,
+            metric_interval: 600,
             failover: true,
             favorites_only: false,
             strategy: "balanced".into(),
@@ -47,6 +51,9 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
+        if !(60..=3600).contains(&self.metric_interval) {
+            return Err(crate::text("metric_interval_invalid").into());
+        }
         if self.proxy_port < 1024 {
             return Err(crate::text("proxy_port_invalid").into());
         }

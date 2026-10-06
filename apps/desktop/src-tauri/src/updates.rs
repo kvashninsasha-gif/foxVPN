@@ -304,7 +304,7 @@ pub async fn install_app_update(
         let target = crate::update_install::app_path(
             &std::env::current_exe().map_err(|_| "Не найдено установленное приложение.")?,
         )?;
-        update.timeout = Some(std::time::Duration::from_secs(180));
+        update.timeout = Some(std::time::Duration::from_secs(600));
         let signal = std::sync::Arc::new(tokio::sync::Notify::new());
         *updates.cancel.lock().unwrap() = Some(signal.clone());
         let mut downloaded = 0u64;

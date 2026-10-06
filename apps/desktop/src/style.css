@@ -31,3 +31,5 @@
 [data-theme=dark] .switch-row input{background:#526178}
 [data-theme=dark] .switch-row input:checked{background:#bd4b17}
 @media(max-width:800px){.switch-row{flex-wrap:wrap;gap:12px}.unavailable-feature{white-space:normal;max-width:100%}}
+.metrics-note{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.metrics-note p{flex-basis:100%;margin:0}.metrics-note select{font-size:11px;padding:7px}.metrics-note button{margin-left:auto}
+.metric-slider{display:grid;gap:9px;flex:1;min-width:180px;max-width:420px}.metric-slider input[type=range]{width:100%;padding:0;border:0;accent-color:#bd4b17;background:transparent;cursor:pointer}.metric-slider-ends{display:flex;justify-content:space-between}

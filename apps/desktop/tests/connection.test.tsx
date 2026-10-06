@@ -15,6 +15,32 @@ beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{}
 afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
+ it('never position disables persisted auto measurements and retains last interval',async()=>{
+  const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='set_metric_settings'){snapshot.profile.settings.auto_metrics=args.enabled;snapshot.profile.settings.metric_interval=args.intervalSeconds;return;}return original(command,args)});
+  await ready();const slider=screen.getByRole('slider',{name:'Обновлять показатели каждые'});
+  fireEvent.change(slider,{target:{value:'61'}});fireEvent.keyUp(slider,{key:'End'});
+  await screen.findByRole('button',{name:'Возобновить замеры'});
+  expect(snapshot.profile.settings.auto_metrics).toBe(false);expect(snapshot.profile.settings.metric_interval).toBe(600);
+  expect(slider.getAttribute('aria-valuetext')).toBe('Никогда');
+ });
+ it('offers one-minute interval and pauses readings without stopping VPN',async()=>{
+  const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='set_metric_settings'){snapshot.profile.settings.auto_metrics=args.enabled;snapshot.profile.settings.metric_interval=args.intervalSeconds;return;}return original(command,args)});
+  snapshot.status='connected';snapshot.connection_plan='ready';await ready();
+  const interval=screen.getByRole('slider',{name:'Обновлять показатели каждые'});
+  expect((interval as HTMLInputElement).value).toBe('10');
+  fireEvent.change(interval,{target:{value:'1'}});
+  expect(ipc.invoke.mock.calls.some(([command])=>command==='set_metric_settings')).toBe(false);
+  fireEvent.keyUp(interval,{key:'ArrowLeft'});
+  await waitFor(()=>expect(snapshot.profile.settings.metric_interval).toBe(60));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Приостановить замеры'}).hasAttribute('disabled')).toBe(false));
+  fireEvent.click(screen.getByRole('button',{name:'Приостановить замеры'}));
+  await screen.findByRole('button',{name:'Возобновить замеры'});
+  expect(snapshot.profile.settings.auto_metrics).toBe(false);
+  expect(snapshot.status).toBe('connected');
+  expect(ipc.invoke.mock.calls.some(([command])=>command==='stop')).toBe(false);
+ });
  it('minute metric events update readings without resetting unsaved settings',async()=>{
   let update:((event:{payload:string})=>void)|undefined;
   ipc.listen.mockImplementation(async(event:string,callback:any)=>{if(event==='metrics-updated')update=callback;return ()=>{}});
