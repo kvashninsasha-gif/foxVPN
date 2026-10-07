@@ -1,0 +1,56 @@
+name: Windows verification and installer
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows.yml'
+      - 'Cargo.*'
+      - 'src/**'
+      - 'tests/**'
+      - 'locales/**'
+      - 'apps/desktop/**'
+      - 'scripts/download-core.py'
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download and verify pinned Windows core
+        run: python scripts/download-core.py --platform windows-amd64
+      - name: Rust tests with real local VLESS and core schema checks
+        run: cargo test --locked --workspace
+        env:
+          SMARTVPN_TEST_CORE: ${{ github.workspace }}/core/sing-box.exe
+      - name: Frontend dependencies
+        run: npm ci
+        working-directory: apps/desktop
+      - name: Frontend tests
+        run: npm test
+        working-directory: apps/desktop
+      - name: Build Windows installer
+        run: npm run tauri -- build --config src-tauri/tauri.windows.conf.json --bundles nsis
+        working-directory: apps/desktop
+      - name: Record artifact checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem target/release/bundle/nsis/*.exe
+          if ($files.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          $files | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content -Encoding ascii target/release/bundle/nsis/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foxVPN-Windows-x64
+          if-no-files-found: error
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/SHA256SUMS.txt
