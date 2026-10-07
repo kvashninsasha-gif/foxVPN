@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Download pinned official sing-box, validate GitHub release SHA256, extract executable."""
-import argparse,hashlib,json,platform,pathlib,tarfile,zipfile,io,urllib.request
+import argparse,hashlib,json,platform,pathlib,tarfile,zipfile,io,urllib.request,sys
+# Redirected Windows stdout may default to cp1252 and reject Russian messages.
+for stream in (sys.stdout,sys.stderr):
+ if hasattr(stream,"reconfigure"):stream.reconfigure(encoding="utf-8",errors="replace")
 VERSION="1.14.2"
 a=argparse.ArgumentParser();a.add_argument('--platform',choices=['darwin-arm64','darwin-amd64','windows-amd64']);args=a.parse_args()
 name=args.platform or (('windows' if platform.system()=='Windows' else 'darwin')+'-'+('arm64' if platform.machine().lower() in ('arm64','aarch64') else 'amd64'))
