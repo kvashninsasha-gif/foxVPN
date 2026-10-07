@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod diagnostics;
 mod file_actions;
+mod local_recovery;
 mod metrics;
 #[cfg(target_os = "macos")]
 mod update_install;
@@ -69,7 +70,7 @@ struct State {
     status: Arc<Mutex<String>>,
     gate: Arc<Mutex<()>>,
     measurements: Arc<Mutex<()>>,
-    wanted: Arc<std::sync::atomic::AtomicBool>,
+    wanted: Arc<smart_vpn_engine::lifecycle::ConnectionIntent>,
 }
 #[derive(Serialize)]
 struct Snapshot {
@@ -361,8 +362,14 @@ fn check_route(domain: String, s: tauri::State<State>) -> Result<routing::Decisi
     routing::decide(&domain, &p.settings.mode, &p.rules)
 }
 fn disconnect(s: &State) -> Result<(), String> {
-    s.wanted.store(false, std::sync::atomic::Ordering::SeqCst);
+    let ticket = s.wanted.cancel();
+    disconnect_for_ticket(s, ticket)
+}
+fn disconnect_for_ticket(s: &State, ticket: u64) -> Result<(), String> {
     let _guard = s.gate.lock().unwrap();
+    if !s.wanted.current(ticket) {
+        return Err(smart_vpn_engine::text("connection_cancelled").into());
+    }
     let active_remote = s
         .core
         .lock()
@@ -399,17 +406,26 @@ fn disconnect(s: &State) -> Result<(), String> {
     result
 }
 
-fn stop_core(s: &State) {
+fn connect_for_ticket(s: &State, ticket: u64, manual: bool) -> Result<u16, String> {
     let _guard = s.gate.lock().unwrap();
-    *s.core.lock().unwrap() = None;
-    *s.status.lock().unwrap() = "disconnected".into();
+    if !s.wanted.current(ticket) {
+        return Err(smart_vpn_engine::text("connection_cancelled").into());
+    }
+    let result = connect_locked(s, ticket);
+    if manual {
+        if result.is_err() {
+            s.wanted.fail_current(ticket);
+        } else {
+            s.wanted.finish_current(ticket);
+        }
+    }
+    result
 }
-fn connect_impl(s: &State) -> Result<u16, String> {
-    let _guard = s.gate.lock().unwrap();
+fn connect_locked(s: &State, ticket: u64) -> Result<u16, String> {
     if s.installing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("Выполняется установка обновления.".into());
     }
-    if !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
+    if !s.wanted.current(ticket) || !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(smart_vpn_engine::text("connection_cancelled").into());
     }
     {
@@ -438,14 +454,15 @@ fn connect_impl(s: &State) -> Result<u16, String> {
                 &smart_vpn_engine::network_helper::Request::Start(Box::new(
                     smart_vpn_engine::network_helper::StartRequest {
                         server: server.clone(),
-                        reserves: p
-                            .servers
+                        reserves: latency::recovery_order(&p.servers, &server.id, &p.settings)
                             .iter()
-                            .filter(|v| {
-                                v.id != server.id && (!p.settings.favorites_only || v.favorite)
+                            .filter(|id| *id != &server.id)
+                            .filter_map(|id| {
+                                p.servers
+                                    .iter()
+                                    .find(|candidate| &candidate.id == id)
+                                    .cloned()
                             })
-                            .take(31)
-                            .cloned()
                             .collect(),
                         settings: p.settings.clone(),
                         rules: p.rules.clone(),
@@ -469,7 +486,7 @@ fn connect_impl(s: &State) -> Result<u16, String> {
             .map_err(|e| smart_vpn_engine::vpn::friendly_error(&e.to_string()))?
             .error_for_status()
             .map_err(|_| smart_vpn_engine::text("message_321"))?;
-        if !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
+        if !s.wanted.current(ticket) || !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
             if core.local.is_none() {
                 let _ = smart_vpn_engine::network_helper::request(
                     &smart_vpn_engine::network_helper::Request::Stop,
@@ -554,28 +571,16 @@ fn prepare_tun(s: tauri::State<State>) -> Result<(), String> {
 #[tauri::command]
 async fn connect(s: tauri::State<'_, State>) -> Result<u16, String> {
     let state = s.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        state
-            .wanted
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        let result = connect_impl(&state);
-        if result.is_err() {
-            state
-                .wanted
-                .store(false, std::sync::atomic::Ordering::SeqCst)
-        }
-        result
-    })
-    .await
-    .map_err(|_| smart_vpn_engine::text("message_322"))?
+    let ticket = state.wanted.request()?;
+    tauri::async_runtime::spawn_blocking(move || connect_for_ticket(&state, ticket, true))
+        .await
+        .map_err(|_| smart_vpn_engine::text("message_322"))?
 }
 #[tauri::command]
 async fn stop(s: tauri::State<'_, State>) -> Result<(), String> {
     let state = s.inner().clone();
-    state
-        .wanted
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    tauri::async_runtime::spawn_blocking(move || disconnect(&state))
+    let ticket = state.wanted.cancel();
+    tauri::async_runtime::spawn_blocking(move || disconnect_for_ticket(&state, ticket))
         .await
         .map_err(|_| smart_vpn_engine::text("message_322"))?
 }
@@ -611,11 +616,11 @@ fn test_impl(s: &State, id: &str, speed: bool) -> Result<latency::Measurement, S
                     "available"
                 }
                 .into();
-                v.successes += 1;
+                v.successes = v.successes.saturating_add(1);
                 v.last_error = None
             }
             Err(e) => {
-                v.failures += 1;
+                v.failures = v.failures.saturating_add(1);
                 v.status = "unavailable".into();
                 v.last_error = Some(e.clone());
                 v.latency_ms = None;
@@ -851,7 +856,7 @@ fn main() {
                 status: Arc::new(Mutex::new("disconnected".into())),
                 gate: Arc::new(Mutex::new(())),
                 measurements: Arc::new(Mutex::new(())),
-                wanted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                wanted: Arc::new(smart_vpn_engine::lifecycle::ConnectionIntent::default()),
             };
             if let Ok(response) = smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Status,
@@ -900,30 +905,22 @@ fn main() {
                                 let _ = app.emit("connection-setup-required", plan);
                                 return;
                             }
+                            let Ok(ticket) = state.wanted.request() else {
+                                return;
+                            };
                             let handle = app.clone();
                             tauri::async_runtime::spawn_blocking(move || {
-                                state
-                                    .wanted
-                                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                                match connect_impl(&state) {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        state
-                                            .wanted
-                                            .store(false, std::sync::atomic::Ordering::SeqCst);
-                                        let _ = handle.emit("operation-error", e);
-                                    }
+                                if let Err(error) = connect_for_ticket(&state, ticket, true) {
+                                    let _ = handle.emit("connection-error", error);
                                 }
                                 let _ = handle.emit("servers-updated", ());
                             });
                         }
                         "stop" => {
-                            state
-                                .wanted
-                                .store(false, std::sync::atomic::Ordering::SeqCst);
+                            let ticket = state.wanted.cancel();
                             let handle = app.clone();
                             tauri::async_runtime::spawn_blocking(move || {
-                                if let Err(error) = disconnect(&state) {
+                                if let Err(error) = disconnect_for_ticket(&state, ticket) {
                                     let _ = handle.emit("operation-error", error);
                                 }
                                 let _ = handle.emit("servers-updated", ());
@@ -954,7 +951,9 @@ fn main() {
                                 }
                                 return;
                             }
-                            if let Err(error) = disconnect(&state) {
+                            let ticket = state.wanted.close();
+                            if let Err(error) = disconnect_for_ticket(&state, ticket) {
+                                state.wanted.reopen();
                                 let _ = app.emit("operation-error", error);
                             } else {
                                 app.exit(0)
@@ -986,28 +985,21 @@ fn main() {
                 }
             }
             let handle = app.handle().clone();
+            let startup_ticket = if !pending_helper
+                && profile.settings.auto_connect
+                && startup_plan == ConnectionPlan::Ready
+            {
+                state.wanted.request_startup()
+            } else {
+                None
+            };
             std::thread::spawn(move || {
-                if !pending_helper
-                    && profile.settings.auto_connect
-                    && startup_plan == ConnectionPlan::Ready
-                {
-                    state
-                        .wanted
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    match connect_impl(&state) {
-                        Ok(_) => (),
-                        Err(e) => {
-                            state
-                                .wanted
-                                .store(false, std::sync::atomic::Ordering::SeqCst);
-                            let _ = handle.emit("operation-error", e);
-                        }
+                if let Some(ticket) = startup_ticket {
+                    if let Err(error) = connect_for_ticket(&state, ticket, true) {
+                        let _ = handle.emit("connection-error", error);
                     }
                 }
-                let mut clock = smart_vpn_engine::lifecycle::RecoveryClock::new(
-                    std::time::Instant::now(),
-                    std::time::SystemTime::now(),
-                );
+                let mut recovery = local_recovery::Worker::new();
                 let mut last_sub = std::time::Instant::now();
                 loop {
                     let running = state.wanted.load(std::sync::atomic::Ordering::SeqCst);
@@ -1017,90 +1009,7 @@ fn main() {
                         10
                     }));
                     let settings = state.profile.lock().unwrap().settings.clone();
-                    let dead = state
-                        .core
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .is_some_and(|c| !c.alive());
-                    if clock.due(
-                        std::time::Instant::now(),
-                        std::time::SystemTime::now(),
-                        std::time::Duration::from_secs(settings.health_interval),
-                        dead,
-                    ) {
-                        if dead {
-                            stop_core(&state);
-                            if !settings.restore {
-                                state
-                                    .wanted
-                                    .store(false, std::sync::atomic::Ordering::SeqCst);
-                            }
-                            let _ = handle.emit("servers-updated", ());
-                        }
-                        let endpoint = state
-                            .core
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .and_then(|c| c.local.as_ref().map(|_| c.proxy_port));
-                        if let Some(port) = endpoint {
-                            let ok = latency::client(port)
-                                .and_then(|c| {
-                                    c.get("https://www.gstatic.com/generate_204")
-                                        .send()
-                                        .map(|r| r.status().is_success())
-                                        .map_err(|_| smart_vpn_engine::text("message_344").into())
-                                })
-                                .unwrap_or(false);
-                            if !ok && state.wanted.load(std::sync::atomic::Ordering::SeqCst) {
-                                stop_core(&state);
-                                if !settings.restore {
-                                    state
-                                        .wanted
-                                        .store(false, std::sync::atomic::Ordering::SeqCst);
-                                } else if settings.failover {
-                                    let servers = state.profile.lock().unwrap().servers.clone();
-                                    for server in &servers {
-                                        if !state.wanted.load(std::sync::atomic::Ordering::SeqCst) {
-                                            break;
-                                        }
-                                        if settings.favorites_only && !server.favorite {
-                                            continue;
-                                        }
-                                        if test_impl(&state, &server.id, false).is_ok() {
-                                            let _ = edit(&state, |p| {
-                                                if state
-                                                    .wanted
-                                                    .load(std::sync::atomic::Ordering::SeqCst)
-                                                {
-                                                    p.selected = Some(server.id.clone());
-                                                }
-                                                Ok(())
-                                            });
-                                            break;
-                                        }
-                                    }
-                                }
-                                if settings.restore
-                                    && state.wanted.load(std::sync::atomic::Ordering::SeqCst)
-                                {
-                                    if let Err(e) = connect_impl(&state) {
-                                        let _ = handle.emit("operation-error", e);
-                                    }
-                                }
-                                let _ = handle.emit("servers-updated", ());
-                            }
-                        } else if state.core.lock().unwrap().is_none()
-                            && settings.restore
-                            && state.wanted.load(std::sync::atomic::Ordering::SeqCst)
-                        {
-                            if let Err(e) = connect_impl(&state) {
-                                let _ = handle.emit("operation-error", e);
-                            }
-                            let _ = handle.emit("servers-updated", ());
-                        }
-                    }
+                    recovery.tick(&state, &handle);
                     if settings.subscription_interval > 0
                         && last_sub.elapsed().as_secs() >= settings.subscription_interval
                     {
@@ -1148,7 +1057,10 @@ fn main() {
                     }
                     return;
                 }
-                if let Err(error) = disconnect(&app.state::<State>()) {
+                let state = app.state::<State>();
+                let ticket = state.wanted.close();
+                if let Err(error) = disconnect_for_ticket(&state, ticket) {
+                    state.wanted.reopen();
                     let _ = app.emit("operation-error", error);
                 } else {
                     app.exit(0)
@@ -1225,12 +1137,11 @@ fn main() {
                     // confirmed app.exit(0) below is allowed on the second event.
                     api.prevent_exit();
                     let state = app.state::<State>().inner().clone();
-                    state
-                        .wanted
-                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    let ticket = state.wanted.close();
                     let handle = app.clone();
                     tauri::async_runtime::spawn_blocking(move || {
-                        if let Err(error) = disconnect(&state) {
+                        if let Err(error) = disconnect_for_ticket(&state, ticket) {
+                            state.wanted.reopen();
                             let _ = handle.emit("operation-error", error);
                             if let Some(w) = handle.get_webview_window("main") {
                                 let _ = w.show();

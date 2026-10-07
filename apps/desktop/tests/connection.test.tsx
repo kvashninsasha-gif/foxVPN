@@ -75,6 +75,17 @@ describe('connection setup regression',()=>{
  it('unsupported features are visibly unavailable rather than active switches',async()=>{await ready();fireEvent.click(screen.getAllByRole('button',{name:'Настройки',exact:true})[0]);expect(screen.getAllByText('Установите сетевой компонент foxVPN для VPN на всём ноутбуке.')).toHaveLength(2);expect(screen.queryByRole('checkbox',{name:/Блокировать защищаемый/})).toBeNull();});
  it('does not interrupt active TUN when automatic restoration is disabled',async()=>{snapshot.status='connected';snapshot.proxy_port=2080;snapshot.helper_available=true;snapshot.connection_plan='ready';snapshot.profile.settings.restore=false;await ready();fireEvent.click(screen.getAllByRole('button',{name:'Настройки',exact:true})[0]);const diagnostic=screen.getByRole('button',{name:'Проверить защиту при обрыве',exact:true});expect(diagnostic.hasAttribute('disabled')).toBe(true);fireEvent.click(diagnostic);expect(ipc.invoke.mock.calls.some(([command])=>command==='test_recovery')).toBe(false);});
  it('a previously accepted proxy mode connects without requesting consent again',async()=>{snapshot.profile.settings.tun=false;snapshot.profile.settings.kill_switch=false;snapshot.profile.settings.proxy_acknowledged=true;snapshot.connection_plan='ready';await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));await waitFor(()=>expect(ipc.invoke.mock.calls.some(([command])=>command==='connect')).toBe(true));expect(screen.queryByRole('dialog')).toBeNull();expect(ipc.invoke.mock.calls.some(([command])=>command==='prepare_proxy')).toBe(false);});
+ it('clears an automatic recovery error after the connection is restored',async()=>{
+  let callback:((event:{payload:string})=>void)|undefined;
+  let status='reconnecting';
+  ipc.listen.mockImplementation(async(event:string,handler:any)=>{if(event==='connection-error')callback=handler;return ()=>{}});
+  const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='runtime')return {status,proxy_port:null,logs:null,connection_error:null};if(command==='traffic')return {upload:0,download:0,vpn_upload:0,vpn_download:0,direct_upload:0,direct_download:0,connections:[]};return original(command,args)});
+  snapshot.platform='windows';snapshot.connection_plan='ready';await ready();
+  await waitFor(()=>expect(callback).toBeDefined());callback!({payload:'Тестовый сбой восстановления'});
+  await screen.findByText('Тестовый сбой восстановления');status='connected';document.dispatchEvent(new Event('visibilitychange'));
+  await waitFor(()=>expect(screen.queryByText('Тестовый сбой восстановления')).toBeNull());
+ });
  it('clears a stale connect failure notice once the tunnel is up',async()=>{
   const failure='Не удалось подключиться к серверу. Подробности доступны в диагностике';
   let runtimeStatus='disconnected';

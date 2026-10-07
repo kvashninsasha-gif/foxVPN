@@ -375,3 +375,39 @@ fn backup_cannot_disagree_about_security() {
     p.servers.push(s);
     assert!(p.validate().is_err());
 }
+
+#[test]
+fn recovery_reserves_obey_strategy_favorites_and_retry_failed_endpoints() {
+    let a = Server::parse(&plain()).unwrap();
+    let mut b = Server::parse(&plain().replace("example.com", "backup.example.com")).unwrap();
+    let mut c = Server::parse(&plain().replace("example.com", "other.example.com")).unwrap();
+    b.favorite = true;
+    b.latency_ms = Some(10);
+    b.status = "unavailable".into();
+    c.latency_ms = Some(100);
+    c.successes = u64::MAX;
+    c.failures = u64::MAX;
+    let mut settings = Settings {
+        strategy: "latency".into(),
+        ..Default::default()
+    };
+    let servers = vec![a.clone(), c.clone(), b.clone()];
+    assert_eq!(
+        latency::recovery_order(&servers, &a.id, &settings),
+        vec![b.id.clone(), c.id.clone(), a.id.clone()]
+    );
+    settings.favorites_only = true;
+    assert_eq!(
+        latency::recovery_order(&servers, &a.id, &settings),
+        vec![b.id.clone(), a.id.clone()]
+    );
+    settings.failover = false;
+    assert_eq!(
+        latency::recovery_order(&servers, &a.id, &settings),
+        vec![a.id.clone()]
+    );
+    settings.failover = true;
+    settings.favorites_only = false;
+    settings.strategy = "stability".into();
+    assert_eq!(latency::recovery_order(&servers, &a.id, &settings).len(), 3);
+}

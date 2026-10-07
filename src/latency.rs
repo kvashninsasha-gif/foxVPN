@@ -97,11 +97,37 @@ pub fn select(servers: &[Server], settings: &Settings) -> Option<String> {
 }
 fn score(s: &Server, settings: &Settings) -> f64 {
     let latency = s.latency_ms.unwrap_or(10_000) as f64;
-    let stability = (s.successes + 1) as f64 / (s.successes + s.failures + 2) as f64;
+    let stability = (s.successes as f64 + 1.0) / (s.successes as f64 + s.failures as f64 + 2.0);
     match settings.strategy.as_str() {
         "latency" => -latency,
         "speed" => s.download_mbps.unwrap_or(0.0),
         "stability" => stability,
         _ => stability * 1000.0 - latency + s.download_mbps.unwrap_or(0.0) * 0.1,
     }
+}
+
+/// Retry eligible reserves once per round, then the originally selected server.
+/// Failed or unmeasured servers remain eligible: a network outage is temporary.
+pub fn recovery_order(servers: &[Server], selected: &str, settings: &Settings) -> Vec<String> {
+    let mut reserves: Vec<_> = servers
+        .iter()
+        .filter(|s| {
+            settings.failover && s.id != selected && (!settings.favorites_only || s.favorite)
+        })
+        .collect();
+    if settings.strategy == "random" {
+        use rand::seq::SliceRandom;
+        reserves.shuffle(&mut rand::thread_rng());
+    } else {
+        reserves.sort_by(|a, b| score(b, settings).total_cmp(&score(a, settings)));
+    }
+    let mut order: Vec<_> = reserves
+        .into_iter()
+        .take(31)
+        .map(|s| s.id.clone())
+        .collect();
+    if servers.iter().any(|s| s.id == selected) {
+        order.push(selected.to_string());
+    }
+    order
 }

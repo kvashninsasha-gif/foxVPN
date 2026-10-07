@@ -162,6 +162,8 @@ pub struct CoreProcess {
     pub api_port: u16,
     pub secret: String,
     pub logs: Arc<Mutex<Vec<String>>>,
+    #[cfg(windows)]
+    _job: crate::process_lifetime::ProcessJob,
 }
 pub fn free_port() -> Result<u16, String> {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -280,6 +282,16 @@ impl CoreProcess {
                 let _ = std::fs::remove_dir_all(&dir);
                 crate::text("message_281")
             })?;
+        #[cfg(windows)]
+        let job = match crate::process_lifetime::ProcessJob::attach(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(error);
+            }
+        };
         let logs = Arc::new(Mutex::new(vec![]));
         for stream in [
             child
@@ -326,8 +338,12 @@ impl CoreProcess {
             api_port,
             secret,
             logs,
+            #[cfg(windows)]
+            _job: job,
         };
-        for _ in 0..60 {
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(if cfg!(windows) { 15 } else { 3 });
+        while std::time::Instant::now() < deadline {
             if proc
                 .child
                 .try_wait()
