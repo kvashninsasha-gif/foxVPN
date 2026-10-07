@@ -11,6 +11,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
+fn hide_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
 pub fn domain_match(r: &Rule) -> Value {
     let d = normalize(r.domain.strip_prefix("*.").unwrap_or(&r.domain)).unwrap();
     if r.domain.starts_with("*.") {
@@ -240,7 +249,9 @@ impl CoreProcess {
         }
         f.write_all(serde_json::to_string(&cfg).unwrap().as_bytes())
             .map_err(|_| crate::text("message_278"))?;
-        let valid = Command::new(binary)
+        let mut validation = Command::new(binary);
+        hide_console(&mut validation);
+        let valid = validation
             .args(["check", "-c"])
             .arg(&path)
             .output()
@@ -254,6 +265,7 @@ impl CoreProcess {
         }
         drop(reservation);
         let mut command = Command::new(binary);
+        hide_console(&mut command);
         if let Some(uid) = uid {
             command.env("FOXVPN_CORE_UID", uid.to_string());
         }

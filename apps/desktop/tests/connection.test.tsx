@@ -15,6 +15,21 @@ beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{}
 afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
+ it('Windows offers explicit proxy consent and hides unsupported macOS controls',async()=>{
+  snapshot.platform='windows';await ready();
+  expect(screen.getAllByText(/Windows: в этой сборке/).length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));
+  expect(ipc.invoke.mock.calls.some(([command])=>command==='connect')).toBe(false);
+  fireEvent.click(screen.getByRole('button',{name:'Подключить локальный прокси',exact:true}));
+  await waitFor(()=>expect(snapshot.status).toBe('connected'));
+  expect(snapshot.profile.settings.tun).toBe(false);
+  expect(snapshot.profile.settings.kill_switch).toBe(false);
+  fireEvent.click(screen.getAllByRole('button',{name:'Настройки',exact:true})[0]);
+  expect(screen.queryByRole('button',{name:'Установить сетевой компонент'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'Проверить компонент'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'Проверить защиту при обрыве'})).toBeNull();
+  expect(screen.getByRole('button',{name:'Проверить сборку'})).toBeTruthy();
+ });
  it('never position disables persisted auto measurements and retains last interval',async()=>{
   const original=ipc.invoke.getMockImplementation()!;
   ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='set_metric_settings'){snapshot.profile.settings.auto_metrics=args.enabled;snapshot.profile.settings.metric_interval=args.intervalSeconds;return;}return original(command,args)});

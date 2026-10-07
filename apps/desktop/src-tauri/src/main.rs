@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod diagnostics;
 mod file_actions;
 mod metrics;
 #[cfg(target_os = "macos")]
@@ -79,6 +80,7 @@ struct Snapshot {
     connection_plan: ConnectionPlan,
     logs: Vec<String>,
     helper_available: bool,
+    platform: &'static str,
 }
 fn edit<T>(s: &State, f: impl FnOnce(&mut Profile) -> Result<T, String>) -> Result<T, String> {
     let _operation = s
@@ -122,6 +124,7 @@ fn snapshot(s: tauri::State<State>) -> Snapshot {
         core_version: "1.14.2".into(),
         logs,
         helper_available,
+        platform: std::env::consts::OS,
     }
 }
 #[derive(Serialize)]
@@ -451,6 +454,7 @@ fn connect_impl(s: &State) -> Result<u16, String> {
             )?;
             ActiveCore::remote(response.status)
         } else {
+            diagnostics::verify_core(s)?;
             ActiveCore::local(CoreProcess::start_on_port(
                 &s.binary,
                 server,
@@ -589,7 +593,8 @@ fn test_impl(s: &State, id: &str, speed: bool) -> Result<latency::Measurement, S
         .find(|v| v.id == id)
         .cloned()
         .ok_or(smart_vpn_engine::text("message_315"))?;
-    let result = latency::measure(&s.binary, &server, speed);
+    let result =
+        diagnostics::verify_core(s).and_then(|_| latency::measure(&s.binary, &server, speed));
     edit(s, |p| {
         let Some(v) = p.servers.iter_mut().find(|v| v.id == id) else {
             return Ok(());
@@ -1171,6 +1176,7 @@ fn main() {
             updates::install_app_update,
             updates::cancel_app_update,
             snapshot,
+            diagnostics::connection_diagnostics,
             runtime,
             install_network_helper,
             prepare_tun,

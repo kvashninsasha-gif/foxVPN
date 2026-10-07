@@ -288,7 +288,9 @@ mod daemon {
             if request.reserves.len() > 31 {
                 return Err(message("helper_invalid"));
             }
-            request.reserves.retain(|server| !request.settings.favorites_only || server.favorite);
+            request
+                .reserves
+                .retain(|server| !request.settings.favorites_only || server.favorite);
             let profile = smart_vpn_engine::settings::Profile {
                 selected: Some(request.server.id.clone()),
                 servers: std::iter::once(request.server.clone())

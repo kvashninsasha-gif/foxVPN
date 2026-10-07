@@ -19,5 +19,6 @@ else:
  with tarfile.open(fileobj=io.BytesIO(data),mode='r:gz') as archive:
   key=next(m for m in archive.getmembers() if m.name.endswith('/sing-box'));binary=archive.extractfile(key).read()
 path=root/'core'/'sing-box';path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(binary);path.chmod(0o755)
+if name.startswith('windows'):(root/'core'/'sing-box.exe').write_bytes(binary)
 (root/'core'/'version.json').write_text(json.dumps({'version':'v'+VERSION,'platform':name,'archive_sha256':digest,'binary_sha256':hashlib.sha256(binary).hexdigest(),'source':asset['browser_download_url']},indent=2))
 print('Компонент VPN загружен и проверен:',VERSION,name)

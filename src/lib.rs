@@ -1,3 +1,4 @@
+pub mod core_integrity;
 pub mod latency;
 pub mod lifecycle;
 pub mod routing;
