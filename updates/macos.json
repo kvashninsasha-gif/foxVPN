@@ -1,11 +1,11 @@
 {
-  "version": "0.1.15",
-  "notes": "foxVPN 0.1.15 — подготовка Windows к проверке\n\nДобавлены Windows-подсказки для локального HTTP/SOCKS-прокси, скрыты кнопки сетевого компонента macOS. Появилась диагностика без адресов серверов и ключей, проверка SHA256/платформы ядра перед запуском и запуск ядра без консольного окна Windows.\n\nWindows: тестовый локальный прокси; VPN для всего ПК, Kill Switch, автоматическая настройка системного прокси и автообновление ещё не реализованы. Установщик без Authenticode-подписи. Инструкция вечерней проверки — docs/windows-test-guide.md.\n\nMac: после обновления при необходимости подтвердите обновление foxVPN-Network в штатном установщике. Подпись app остаётся ad-hoc. Системная приёмка 0.1.15 не завершена.",
-  "pub_date": "2026-10-07T09:56:47.877630Z",
+  "version": "0.1.16",
+  "notes": "foxVPN 0.1.16 — устойчивость подключения\n\nWindows: ядро привязано к жизненному циклу приложения и завершается при его аварийном закрытии после назначения Job Object. Добавлено более длительное ожидание запуска ядра.\n\nУстаревшие проверки и ошибки не вмешиваются в новые подключения. Восстановление локального прокси использует ограниченную очередь резервов со стратегией/избранным и паузы до 60 секунд. Исправлены переполнение счётчиков и устаревшие сообщения после восстановления.\n\nТестовый Windows-прокси: системный TUN/Kill Switch и Windows updater ещё отсутствуют, установщик без Authenticode-подписи. Инструкция — docs/windows-test-guide.md. На Mac после обновления может потребоваться подтверждение foxVPN-Network; подпись app остаётся ad-hoc.",
+  "pub_date": "2026-10-07T12:00:04.163247Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.15/foxVPN-0.1.15-macOS-arm64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbXhybGthKzFDb2xUeFBzMjY5OCtNSHZ5azJLTzFpbDVmT3QzZXBCSk1IcC82ajRzdVBtTm5NaW5kTEVwS1JqeWhUbXN2dkwvbmNISHlVZG9HZ3ZuRGdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzY3MDA3CWZpbGU6Zm94VlBOLTAuMS4xNS1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjE1CjhmU28vTUNEdys2amMxQnhUdmxzY2RWK1lXZWQwdGNWS2x5QVVQbndiM3g4NENndCtQbEQvVzJBSm53dkYvOWlsVml5TVFjVnhxelJncUZxVVFMQUNBPT0K"
+      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.16/foxVPN-0.1.16-macOS-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbStGVHczZys2SlgxZUxYWm8xZ1U2ZFdXL3p3dWpMYUdDT3dleDNkeGlNblMycndvVVQvKy9tUFVTYStjTEowV0NDdWIyd3dITXo0OS91eEFEeEd4T3d3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzc0NDA0CWZpbGU6Zm94VlBOLTAuMS4xNi1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjE2CklXZU9VRUVFOHVrSFlNYUFuRUxrN2JpZ2R0RXBCVGNnMHBoVERpQUhySEZRS1g0bmY1aEJhVTE1c3RpalBuY0xmOVdOeU94NTJKQlN6TmowQkxuSURRPT0K"
     }
   }
 }
