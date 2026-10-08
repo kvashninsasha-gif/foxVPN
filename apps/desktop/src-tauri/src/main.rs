@@ -128,6 +128,30 @@ fn snapshot(s: tauri::State<State>) -> Snapshot {
         platform: std::env::consts::OS,
     }
 }
+#[tauri::command]
+async fn windows_proxy_status(
+    state: tauri::State<'_, State>,
+) -> Result<smart_vpn_engine::windows_proxy::Status, String> {
+    let configured = state
+        .profile
+        .lock()
+        .map_err(|_| "Не удалось прочитать настройки")?
+        .settings
+        .proxy_port;
+    let port = state
+        .core
+        .lock()
+        .map_err(|_| "Не удалось прочитать состояние")?
+        .as_ref()
+        .map_or(configured, |c| c.proxy_port);
+    tauri::async_runtime::spawn_blocking(move || smart_vpn_engine::windows_proxy::read(port))
+        .await
+        .map_err(|_| "Не удалось проверить прокси Windows".to_string())?
+}
+#[tauri::command]
+fn open_windows_proxy_settings() -> Result<(), String> {
+    smart_vpn_engine::windows_proxy::open_settings()
+}
 #[derive(Serialize)]
 struct RuntimeSnapshot {
     status: String,
@@ -1088,6 +1112,8 @@ fn main() {
             updates::install_app_update,
             updates::cancel_app_update,
             snapshot,
+            windows_proxy_status,
+            open_windows_proxy_settings,
             diagnostics::connection_diagnostics,
             runtime,
             install_network_helper,

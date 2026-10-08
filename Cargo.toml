@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "smart-vpn-engine"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -25,4 +25,4 @@ rand = "0.8"
 zeroize = "1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

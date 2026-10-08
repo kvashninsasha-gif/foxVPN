@@ -22,3 +22,5 @@ pub mod network_helper;
 pub mod user_files;
 
 mod process_lifetime;
+
+pub mod windows_proxy;
