@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="76" viewBox="0 0 360 76" role="img" aria-label="Скачать для macOS">
+<rect x="1" y="1" width="358" height="74" rx="14" fill="#263449" stroke="#72839a" stroke-opacity=".25"/>
+<rect x="21" y="22" width="34" height="23" rx="3" fill="none" stroke="white" stroke-width="2.5"/><path d="M17 50h42l-3 4H20z" fill="white"/>
+<text x="74" y="34" fill="white" font-family="Arial, sans-serif" font-size="18" font-weight="700">Скачать для macOS</text>
+<text x="74" y="56" fill="white" fill-opacity=".8" font-family="Arial, sans-serif" font-size="12">Apple Silicon · arm64 · .zip</text>
+</svg>

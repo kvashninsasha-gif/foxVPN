@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="76" viewBox="0 0 360 76" role="img" aria-label="Скачать для Windows">
+<rect x="1" y="1" width="358" height="74" rx="14" fill="#0878d1" stroke="#72839a" stroke-opacity=".25"/>
+<path d="M22 23h14v13H22zM39 23h14v13H39zM22 39h14v13H22zM39 39h14v13H39z" fill="white"/>
+<text x="74" y="34" fill="white" font-family="Arial, sans-serif" font-size="18" font-weight="700">Скачать для Windows</text>
+<text x="74" y="56" fill="white" fill-opacity=".8" font-family="Arial, sans-serif" font-size="12">Windows · x64 · .exe</text>
+</svg>
