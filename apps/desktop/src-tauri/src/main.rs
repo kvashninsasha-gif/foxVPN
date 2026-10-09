@@ -3,6 +3,7 @@ mod diagnostics;
 mod file_actions;
 mod local_recovery;
 mod metrics;
+mod setup_check;
 #[cfg(target_os = "macos")]
 mod update_install;
 mod updates;
@@ -1188,6 +1189,7 @@ fn main() {
             windows_proxy_status,
             open_windows_proxy_settings,
             diagnostics::connection_diagnostics,
+            setup_check::setup_check,
             runtime,
             install_network_helper,
             prepare_tun,

@@ -22,6 +22,19 @@ pub fn client(port: u16) -> Result<reqwest::blocking::Client, String> {
         .build()
         .map_err(|_| crate::text("message_249").into())
 }
+/// Control request without an application proxy. OS routes are still respected.
+pub fn probe_without_proxy() -> Result<bool, String> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "Не удалось подготовить контрольный запрос")?
+        .get("https://www.gstatic.com/generate_204")
+        .send()
+        .map(|r| r.status().as_u16() == 204)
+        .map_err(|_| "Контрольный запрос не прошёл".into())
+}
 pub fn measure(binary: &Path, s: &Server, speed: bool) -> Result<Measurement, String> {
     let settings = Settings {
         mode: Mode::Vpn,

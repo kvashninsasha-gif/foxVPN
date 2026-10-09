@@ -15,6 +15,16 @@ beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{}
 afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
+ it('guided connect never toggles a connection that became active after the check',async()=>{
+  const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='setup_check')return {items:[],action:'connect',selected:'test',recommendation:null,tested:1,total:1,changed:false};return original(command,args)});
+  await ready();fireEvent.click(screen.getByRole('button',{name:'Проверить и настроить'}));
+  await screen.findByRole('button',{name:'Перейти к подключению'});snapshot.status='connected';
+  fireEvent.click(screen.getByRole('button',{name:'Перейти к подключению'}));
+  await waitFor(()=>expect(screen.getAllByText(/Состояние подключения изменилось/).length).toBeGreaterThan(0));
+  expect(ipc.invoke.mock.calls.some(([command])=>command==='connect'||command==='stop')).toBe(false);
+ });
+
  it('Windows manual choice does not consent to changing OS proxy',async()=>{snapshot.platform='windows';await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Подключить только локальный прокси',exact:true}));await waitFor(()=>expect(snapshot.status).toBe('connected'));expect(snapshot.profile.settings.windows_proxy_auto).toBe(false);expect(ipc.invoke.mock.calls.find(([command])=>command==='prepare_proxy')?.[1]).toEqual({expectedSelected:'test',windowsProxyAuto:false});});
 
  it('Windows offers explicit proxy consent and hides unsupported macOS controls',async()=>{
