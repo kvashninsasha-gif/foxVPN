@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 if sys.platform != "win32" or os.environ.get("FOXVPN_TEST_ALLOW_SYSTEM_PROXY") != "1":
     raise SystemExit("Requires disposable Windows runner and explicit test opt-in")
@@ -74,8 +75,33 @@ with tempfile.TemporaryDirectory(prefix="foxvpn-release-guardian-") as temp:
             expected = ((before[0] & ~2) | 1, *before[1:])
         assert read() == expected
         assert not (Path(temp) / "ru.smartvpn.router/windows-proxy-session.json").exists()
+        # Kill the guardian too: next ordinary launch must recover before reading
+        # even a broken encrypted profile, without relying on GUI initialization.
+        write(before)
+        process = subprocess.Popen([str(exe), "--foxvpn-proxy-guardian"], env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        process.stdin.write(b"2080\n"); process.stdin.flush()
+        reply = queue.Queue()
+        threading.Thread(target=lambda: reply.put(process.stdout.readline()), daemon=True).start()
+        assert reply.get(timeout=15).strip() == b"FOXVPN_PROXY_READY"
+        process.kill(); process.wait(timeout=10)
+        data = Path(temp) / "ru.smartvpn.router"
+        (data / "profile.enc").write_bytes(b"corrupt-test-profile")
+        main = subprocess.Popen([str(exe)], env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            deadline = time.monotonic() + 15
+            while (read() != expected or (data / "windows-proxy-session.json").exists()) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert read() == expected
+            assert not (data / "windows-proxy-session.json").exists()
+        finally:
+            if main.poll() is None: main.kill()
+            main.wait(timeout=10)
     finally:
         if process.poll() is None:
             process.kill(); process.wait(timeout=10)
         write(before)
-print("Release EXE proxy configuration and restoration verified")
+print("Release EXE proxy restore and recovery before corrupt profile verified")

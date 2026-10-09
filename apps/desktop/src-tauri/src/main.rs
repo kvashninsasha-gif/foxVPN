@@ -896,6 +896,9 @@ fn main() {
             1
         });
     }
+    // Recover even if loading the encrypted profile or creating the UI fails.
+    #[cfg(windows)]
+    let proxy_recovery_error = windows_proxy_auto::Session::recover().err();
     let strings: serde_json::Value =
         serde_json::from_str(include_str!("../../../../locales/ru.json")).expect("Russian locale");
     let t = move |key: &str| strings[key].as_str().unwrap().to_string();
@@ -940,13 +943,18 @@ fn main() {
                 status: Arc::new(Mutex::new("disconnected".into())),
                 gate: Arc::new(Mutex::new(())),
                 measurements: Arc::new(Mutex::new(())),
-                proxy_error: Arc::new(Mutex::new(None)),
+                proxy_error: Arc::new(Mutex::new({
+                    #[cfg(windows)]
+                    {
+                        proxy_recovery_error
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        None
+                    }
+                })),
                 wanted: Arc::new(smart_vpn_engine::lifecycle::ConnectionIntent::default()),
             };
-            #[cfg(windows)]
-            if let Err(error) = windows_proxy_auto::Session::recover() {
-                *state.proxy_error.lock().unwrap() = Some(error);
-            }
             if let Ok(response) = smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Status,
             ) {
