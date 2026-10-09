@@ -28,9 +28,9 @@ impl Default for Preferences {
 pub struct AppUpdates {
     path: PathBuf,
     busy: AtomicBool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     offer: Mutex<Option<tauri_plugin_updater::Update>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     cancel: Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
 }
 impl AppUpdates {
@@ -42,9 +42,9 @@ impl AppUpdates {
                 .map_err(|_| "Не найден каталог настроек обновления.")?
                 .join("updates.json"),
             busy: AtomicBool::new(false),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             offer: Mutex::new(None),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             cancel: Mutex::new(None),
         })
     }
@@ -104,7 +104,7 @@ impl AppUpdates {
 struct Busy<'a>(&'a AppUpdates);
 impl Drop for Busy<'_> {
     fn drop(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             *self.0.cancel.lock().unwrap() = None;
         }
@@ -114,6 +114,7 @@ impl Drop for Busy<'_> {
 #[derive(Serialize)]
 pub struct Info {
     supported: bool,
+    platform: &'static str,
     current: String,
     auto_check: bool,
     skipped_version: Option<String>,
@@ -158,16 +159,22 @@ pub async fn update_state(
         let _ = state.write(&prefs);
     }
     Ok(Info {
-        supported: cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        supported: cfg!(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(windows, target_arch = "x86_64")
+        )),
+        platform: std::env::consts::OS,
         current,
         auto_check: prefs.auto_check,
         skipped_version: prefs.skipped_version,
-        helper_required: matches!(
-            component,
-            smart_vpn_engine::network_helper::Probe::Stale
-                | smart_vpn_engine::network_helper::Probe::Missing
-        ),
-        helper_starting: component == smart_vpn_engine::network_helper::Probe::Starting,
+        helper_required: cfg!(target_os = "macos")
+            && matches!(
+                component,
+                smart_vpn_engine::network_helper::Probe::Stale
+                    | smart_vpn_engine::network_helper::Probe::Missing
+            ),
+        helper_starting: cfg!(target_os = "macos")
+            && component == smart_vpn_engine::network_helper::Probe::Starting,
         error,
     })
 }
@@ -196,7 +203,7 @@ pub async fn check_app_update(
     state: tauri::State<'_, AppUpdates>,
 ) -> Result<Option<Offer>, String> {
     let _busy = state.acquire()?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         use tauri_plugin_updater::UpdaterExt;
         let updater = app
@@ -237,24 +244,33 @@ pub async fn check_app_update(
         *state.offer.lock().unwrap() = result;
         Ok(offer)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (app, manual);
         Ok(None)
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn validate_offer(version: &str, url: &str) -> Result<(), String> {
     let parsed = semver::Version::parse(version).map_err(|_| "Некорректная версия обновления.")?;
-    if !parsed.pre.is_empty() || !parsed.build.is_empty() || url != format!("https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v{version}/foxVPN-{version}-macOS-arm64.app.tar.gz") || !cfg!(target_arch="aarch64") {
-        return Err("Нет подходящего официального обновления для этого Mac.".into());
+    let expected = if cfg!(windows) {
+        format!("https://github.com/kvashninsasha-gif/foxVPN/releases/download/v{version}/foxVPN_{version}_x64-setup.exe")
+    } else {
+        format!("https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v{version}/foxVPN-{version}-macOS-arm64.app.tar.gz")
+    };
+    let architecture = cfg!(any(
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ));
+    if !parsed.pre.is_empty() || !parsed.build.is_empty() || url != expected || !architecture {
+        return Err("Нет подходящего официального обновления для этой платформы.".into());
     }
     Ok(())
 }
 #[tauri::command]
 pub fn skip_app_update(version: String, state: tauri::State<AppUpdates>) -> Result<(), String> {
     let _busy = state.acquire()?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         if !state
             .offer
@@ -269,7 +285,7 @@ pub fn skip_app_update(version: String, state: tauri::State<AppUpdates>) -> Resu
         prefs.skipped_version = Some(version);
         state.write(&prefs)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = version;
         Err("Обновление доступно только на macOS Apple Silicon.".into())
@@ -283,11 +299,11 @@ struct Progress {
 }
 #[tauri::command]
 pub fn cancel_app_update(state: tauri::State<AppUpdates>) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     if let Some(cancel) = state.cancel.lock().unwrap().as_ref() {
         cancel.notify_one();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     let _ = state;
 }
 #[tauri::command]
@@ -422,16 +438,146 @@ pub async fn install_app_update(
         app.request_restart();
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        install_windows(version, app, &updates, &vpn).await
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (version, app, vpn);
         Err("Обновление доступно только на macOS Apple Silicon.".into())
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use futures_util::FutureExt;
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(windows)]
+async fn install_windows(
+    version: String,
+    app: tauri::AppHandle,
+    updates: &AppUpdates,
+    vpn: &crate::State,
+) -> Result<(), String> {
+    let mut update = updates
+        .offer
+        .lock()
+        .map_err(|_| "Не удалось прочитать обновление")?
+        .clone()
+        .ok_or("Сначала проверьте обновления.")?;
+    if update.version != version {
+        return Err("Доступная версия изменилась. Проверьте обновления заново.".into());
+    }
+    validate_offer(&version, update.download_url.as_str())?;
+    update.timeout = Some(std::time::Duration::from_secs(600));
+    let signal = std::sync::Arc::new(tokio::sync::Notify::new());
+    *updates
+        .cancel
+        .lock()
+        .map_err(|_| "Не удалось подготовить скачивание")? = Some(signal.clone());
+    let mut downloaded = 0u64;
+    let mut emitted = 0u64;
+    let oversized = AtomicBool::new(false);
+    let _ = app.emit(
+        "app-update-progress",
+        Progress {
+            stage: "downloading",
+            downloaded: 0,
+            total: None,
+        },
+    );
+    let download = update.download(
+        |chunk, total| {
+            downloaded = downloaded.saturating_add(chunk as u64);
+            if downloaded > 256 * 1024 * 1024 || total.is_some_and(|v| v > 256 * 1024 * 1024) {
+                oversized.store(true, Ordering::SeqCst);
+                signal.notify_one();
+            }
+            if downloaded - emitted >= 256 * 1024 {
+                emitted = downloaded;
+                let _ = app.emit(
+                    "app-update-progress",
+                    Progress {
+                        stage: "downloading",
+                        downloaded,
+                        total,
+                    },
+                );
+            }
+        },
+        || {},
+    );
+    let bytes = tokio::select! { biased;
+        _=signal.notified()=>return Err(if oversized.load(Ordering::SeqCst) {
+            "Обновление превышает допустимый размер 256 МБ. VPN не менялся."
+        } else { "Скачивание отменено. VPN не менялся." }.into()),
+        result=download=>result.map_err(|_| "Не удалось скачать обновление или проверить цифровую подпись. VPN не менялся.")?
+    };
+    verify_windows_package(&bytes, &update.signature, &version)?;
+    let _ = app.emit(
+        "app-update-progress",
+        Progress {
+            stage: "verifying",
+            downloaded: bytes.len() as u64,
+            total: None,
+        },
+    );
+    if signal.notified().now_or_never().is_some() {
+        return Err("Подготовка отменена. VPN не менялся.".into());
+    }
+    *updates
+        .cancel
+        .lock()
+        .map_err(|_| "Не удалось завершить подготовку")? = None;
+    let old = updates.read()?;
+    let mut next = old.clone();
+    next.skipped_version = None;
+    next.pending_version = None;
+    updates.write(&next)?;
+    vpn.installing.store(true, Ordering::SeqCst);
+    let state = vpn.clone();
+    let stopped = tauri::async_runtime::spawn_blocking(move || {
+        let profile = state
+            .profile
+            .lock()
+            .map_err(|_| "Не удалось сохранить профиль")?;
+        state.vault.save(&profile)?;
+        drop(profile);
+        // Restore the Windows proxy and wait for core/guardian termination before
+        // NSIS replaces their executable files. Direct exit bypasses Drop.
+        crate::disconnect(&state)
+    })
+    .await
+    .map_err(|_| "Не удалось подготовить завершение foxVPN".to_string())
+    .and_then(|v| v);
+    if let Err(error) = stopped {
+        vpn.installing.store(false, Ordering::SeqCst);
+        let _ = updates.write(&old);
+        return Err(format!(
+            "{error}. Установка не началась. Проверьте подключение VPN."
+        ));
+    }
+    let _ = app.emit(
+        "app-update-progress",
+        Progress {
+            stage: "installing",
+            downloaded: 0,
+            total: None,
+        },
+    );
+    // The native updater starts the verified NSIS installer and exits only after
+    // ShellExecute succeeds; NSIS handles its own progress, cancellation and restart.
+    if update.install(bytes).is_err() {
+        vpn.installing.store(false, Ordering::SeqCst);
+        let _ = updates.write(&old);
+        return Err(
+            "Не удалось открыть установщик Windows. VPN отключён; его можно подключить заново."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(test, any(target_os = "macos", windows)))]
 mod tests {
     use super::*;
     fn state(path: PathBuf) -> AppUpdates {
@@ -493,7 +639,11 @@ mod tests {
     }
     #[test]
     fn iphone_foreign_and_downgrade_channel_urls_rejected() {
-        let valid="https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.7/foxVPN-0.1.7-macOS-arm64.app.tar.gz";
+        let valid = if cfg!(windows) {
+            "https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.7/foxVPN_0.1.7_x64-setup.exe"
+        } else {
+            "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.7/foxVPN-0.1.7-macOS-arm64.app.tar.gz"
+        };
         assert!(validate_offer("0.1.7", valid).is_ok());
         for (version, url) in [
             ("ios-v0.1.7", valid),
@@ -508,4 +658,60 @@ mod tests {
             assert!(validate_offer(version, url).is_err());
         }
     }
+    #[test]
+    #[ignore = "requires the locally signed Windows release installer"]
+    fn signed_windows_installer_accepts_only_original_bytes_and_version() {
+        let artifact =
+            std::env::var("FOXVPN_TEST_WINDOWS_UPDATE_ARTIFACT").expect("signed artifact path");
+        let version =
+            std::env::var("FOXVPN_TEST_WINDOWS_UPDATE_VERSION").expect("signed artifact version");
+        let bytes = fs::read(&artifact).unwrap();
+        let signature = fs::read_to_string(format!("{artifact}.sig")).unwrap();
+        verify_windows_package(&bytes, &signature, &version).unwrap();
+        assert!(verify_windows_package(&bytes, &signature, "999.0.0").is_err());
+        let mut corrupted = bytes;
+        let last = corrupted.len() - 1;
+        corrupted[last] ^= 1;
+        assert!(verify_windows_package(&corrupted, &signature, &version).is_err());
+    }
+}
+
+#[cfg(any(windows, test))]
+fn verify_windows_package(bytes: &[u8], signature: &str, version: &str) -> Result<(), String> {
+    use base64::Engine;
+    if bytes.len() > 256 * 1024 * 1024 || !bytes.starts_with(b"MZ") {
+        return Err("Неверный формат установщика Windows. VPN не менялся.".into());
+    }
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.windows.conf.json"))
+            .map_err(|_| "Не найден ключ проверки обновлений")?;
+    let decode = |s: &str| -> Result<String, String> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(s.trim())
+            .map_err(|_| "Некорректная подпись обновления")?;
+        String::from_utf8(bytes).map_err(|_| "Некорректная подпись обновления".into())
+    };
+    let key = minisign_verify::PublicKey::decode(&decode(
+        config["plugins"]["updater"]["pubkey"]
+            .as_str()
+            .ok_or("Не найден ключ проверки обновлений")?,
+    )?)
+    .map_err(|_| "Некорректный ключ обновлений")?;
+    let signature = minisign_verify::Signature::decode(&decode(signature)?)
+        .map_err(|_| "Некорректная подпись обновления")?;
+    key.verify(bytes, &signature, false)
+        .map_err(|_| "Подпись установщика не прошла проверку. VPN не менялся.")?;
+    let signed = signature
+        .trusted_comment()
+        .split('\t')
+        .find_map(|v| v.strip_prefix("version:"))
+        .ok_or("Подпись не содержит версию установщика")?;
+    if semver::Version::parse(signed).ok() != semver::Version::parse(version).ok()
+        || semver::Version::parse(version).is_err()
+    {
+        return Err(
+            "Версия в подписи не совпадает с предложенным обновлением. VPN не менялся.".into(),
+        );
+    }
+    Ok(())
 }

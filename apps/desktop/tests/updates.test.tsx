@@ -12,6 +12,19 @@ afterEach(cleanup);
 function mount(blocked=false){return render(<Updates ready showSettings blocked={blocked} onRefresh={refresh}/>)}
 const installs=()=>ipc.invoke.mock.calls.filter(([c])=>c==='install_app_update');
 describe('update consent and startup',()=>{
+ it('Windows overview exposes manual update checking with platform-specific text',async()=>{
+  info.platform='windows';info.auto_check=false;offer=null;
+  render(<Updates ready showSettings={false} showOverview blocked={false} onRefresh={refresh}/>);
+  const button=await screen.findByRole('button',{name:'Проверить обновления'});
+  expect(screen.getByText(/Windows-релизы/)).toBeTruthy();expect(screen.queryByText(/Mac-релизы/)).toBeNull();
+  fireEvent.click(button);await screen.findByText('У вас актуальная версия foxVPN.');expect(installs()).toHaveLength(0);
+ });
+ it('Windows update consent explains proxy restoration and never invokes a macOS installer',async()=>{
+  info.platform='windows';mount();await screen.findByRole('dialog');
+  expect(screen.getByText(/прежний прокси восстановится/)).toBeTruthy();expect(screen.queryByText(/macOS может отдельно/)).toBeNull();
+  expect(installs()).toHaveLength(0);expect(ipc.invoke.mock.calls.some(([c])=>c==='install_network_helper')).toBe(false);
+ });
+
  it('shows both versions but never downloads without approval',async()=>{mount();await screen.findByRole('dialog');expect(screen.getByText('0.1.6')).toBeTruthy();expect(screen.getByText('0.1.7')).toBeTruthy();expect(installs()).toHaveLength(0);fireEvent.click(screen.getByRole('button',{name:'Позже',exact:true}));expect(screen.queryByRole('dialog')).toBeNull();expect(installs()).toHaveLength(0)});
  it('explicit update sends exact offered version and approval once',async()=>{ipc.invoke.mockImplementation(async(c:string)=>{if(c==='update_state')return info;if(c==='check_app_update')return offer;if(c==='install_app_update')return new Promise(()=>{});throw Error(c)});mount();await screen.findByRole('dialog');const button=screen.getByRole('button',{name:'Обновить',exact:true});fireEvent.click(button);fireEvent.click(button);expect(installs()).toHaveLength(1);expect(installs()[0][1]).toEqual({version:'0.1.7',approved:true});expect(screen.getByRole('button',{name:'Закрыть обновление'}).hasAttribute('disabled')).toBe(true);expect(document.activeElement).toBe(screen.getByRole('button',{name:'Отменить скачивание'}))});
  it('skip persists only that version and manual check can offer it again',async()=>{mount();await screen.findByRole('dialog');fireEvent.click(screen.getByRole('button',{name:'Пропустить эту версию'}));await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());expect(ipc.invoke).toHaveBeenCalledWith('skip_app_update',{version:'0.1.7'});fireEvent.click(screen.getByRole('button',{name:'Проверить обновления'}));await screen.findByRole('dialog');expect(installs()).toHaveLength(0)});

@@ -911,7 +911,7 @@ fn main() {
             None,
         ))
         .setup(move |app| {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             let app_updates =
