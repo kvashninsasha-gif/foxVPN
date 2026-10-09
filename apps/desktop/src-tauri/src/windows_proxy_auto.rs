@@ -371,6 +371,38 @@ mod tests {
         std::fs::remove_dir(p.parent().unwrap()).unwrap();
     }
     #[test]
+    fn notification_failure_after_apply_rolls_back_original_configuration() {
+        struct Fault(Fake, std::cell::Cell<bool>);
+        impl Backend for Fault {
+            fn read(&self) -> Result<Configuration, String> {
+                self.0.read()
+            }
+            fn write(&self, c: &Configuration) -> Result<(), String> {
+                self.0.write(c)?;
+                if self.1.replace(false) {
+                    Err("notification failed".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let f = Fault(Fake(RefCell::new(before())), std::cell::Cell::new(true));
+        let p = fixture();
+        assert!(acquire(&f, &p, 2080).is_err());
+        assert_eq!(f.read().unwrap(), before());
+        assert!(!p.exists());
+        std::fs::remove_dir(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn journal_write_failure_does_not_change_windows() {
+        let f = Fake(RefCell::new(before()));
+        let p = fixture();
+        let missing = p.parent().unwrap().join("missing/journal.json");
+        assert!(acquire(&f, &missing, 2080).is_err());
+        assert_eq!(f.read().unwrap(), before());
+        std::fs::remove_dir(p.parent().unwrap()).unwrap();
+    }
+    #[test]
     fn previously_manual_foxvpn_proxy_is_disabled_on_disconnect() {
         let mut config = before().managed(2080);
         config.flags = 11;

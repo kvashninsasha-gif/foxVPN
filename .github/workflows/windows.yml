@@ -11,6 +11,7 @@ on:
       - 'locales/**'
       - 'apps/desktop/**'
       - 'scripts/download-core.py'
+      - 'scripts/test-windows-proxy-guardian.py'
 permissions:
   contents: read
 jobs:
@@ -45,6 +46,10 @@ jobs:
       - name: Build Windows installer
         run: npm run tauri -- build --config src-tauri/tauri.windows.conf.json --bundles nsis
         working-directory: apps/desktop
+      - name: Verify packaged release proxy guardian entry
+        run: python scripts/test-windows-proxy-guardian.py target/release/smart-vpn-desktop.exe
+        env:
+          FOXVPN_TEST_ALLOW_SYSTEM_PROXY: "1"
       - name: Record artifact checksums
         shell: pwsh
         run: |
