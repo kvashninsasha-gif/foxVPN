@@ -11,16 +11,19 @@ import {App} from '../src/App';
 import type {Snapshot} from '../src/types';
 let snapshot:Snapshot;
 function fixture():Snapshot{return{status:'disconnected',proxy_port:null,core_version:'1.14.2',connection_plan:'needs_proxy_consent',logs:[],profile:{version:1,selected:'test',subscriptions:[],rules:[],servers:[{id:'test',name:'Тестовый сервер',address:'example.com',port:443,uuid:'public-test-fixture',transport:'tcp',security:'tls',params:{},favorite:false,group:'Основные',subscription:null,latency_ms:88,download_mbps:16.4,status:'available',successes:1,failures:0,last_error:null}],settings:{mode:'smart',tun:true,kill_switch:true,proxy_acknowledged:false,proxy_port:2080,dns_protection:true,dns_provider:'cloudflare',dns_transport:'https',auto_connect:false,start_minimized:false,restore:true,health_interval:30,failover:true,favorites_only:false,strategy:'balanced',subscription_interval:21600}}}}
-beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{});ipc.invoke.mockReset();ipc.invoke.mockImplementation(async(command:string)=>{if(command==='snapshot')return structuredClone(snapshot);if(command==='prepare_proxy'){snapshot.profile.settings.tun=false;snapshot.profile.settings.kill_switch=false;snapshot.profile.settings.proxy_acknowledged=true;snapshot.connection_plan='ready';return;}if(command==='connect'){snapshot.status='connected';snapshot.proxy_port=2080;return 2080;}throw new Error('Unexpected command '+command);});});
+beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{});ipc.invoke.mockReset();ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='snapshot')return structuredClone(snapshot);if(command==='prepare_proxy'){snapshot.profile.settings.tun=false;snapshot.profile.settings.kill_switch=false;snapshot.profile.settings.proxy_acknowledged=true;if(args?.windowsProxyAuto!==undefined)snapshot.profile.settings.windows_proxy_auto=args.windowsProxyAuto;snapshot.connection_plan='ready';return;}if(command==='connect'){snapshot.status='connected';snapshot.proxy_port=2080;return 2080;}throw new Error('Unexpected command '+command);});});
 afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
+ it('Windows manual choice does not consent to changing OS proxy',async()=>{snapshot.platform='windows';await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Подключить только локальный прокси',exact:true}));await waitFor(()=>expect(snapshot.status).toBe('connected'));expect(snapshot.profile.settings.windows_proxy_auto).toBe(false);expect(ipc.invoke.mock.calls.find(([command])=>command==='prepare_proxy')?.[1]).toEqual({expectedSelected:'test',windowsProxyAuto:false});});
+
  it('Windows offers explicit proxy consent and hides unsupported macOS controls',async()=>{
   snapshot.platform='windows';await ready();
   expect(screen.getAllByText(/Windows: в этой сборке/).length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));
   expect(ipc.invoke.mock.calls.some(([command])=>command==='connect')).toBe(false);
-  fireEvent.click(screen.getByRole('button',{name:'Подключить локальный прокси',exact:true}));
+  fireEvent.click(screen.getByRole('button',{name:'Подключить и настроить Windows',exact:true}));
+  expect(ipc.invoke.mock.calls.find(([command])=>command==='prepare_proxy')?.[1]).toEqual({expectedSelected:'test',windowsProxyAuto:true});
   await waitFor(()=>expect(snapshot.status).toBe('connected'));
   expect(snapshot.profile.settings.tun).toBe(false);
   expect(snapshot.profile.settings.kill_switch).toBe(false);

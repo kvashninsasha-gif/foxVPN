@@ -68,6 +68,9 @@ fn explicit_proxy_choice_preserves_every_other_setting() {
     expected["settings"]["tun"] = false.into();
     expected["settings"]["kill_switch"] = false.into();
     expected["settings"]["proxy_acknowledged"] = true.into();
+    if cfg!(windows) {
+        expected["settings"]["windows_proxy_auto"] = false.into();
+    }
     assert_eq!(serde_json::to_value(&next).unwrap(), expected);
     assert_eq!(settings::connection_plan(&next), ConnectionPlan::Ready);
     assert!(p.settings.tun && p.settings.kill_switch);

@@ -1,6 +1,6 @@
 [package]
 name = "smart-vpn-desktop"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 license = "GPL-3.0-only"
 [build-dependencies]
@@ -27,3 +27,6 @@ futures-util = "0.3"
 
 [dev-dependencies]
 tauri = {version="2", features= ["test"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }

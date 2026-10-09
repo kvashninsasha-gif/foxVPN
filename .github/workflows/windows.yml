@@ -32,6 +32,10 @@ jobs:
         run: cargo test --locked --workspace
         env:
           SMARTVPN_TEST_CORE: ${{ github.workspace }}/core/sing-box.exe
+      - name: Native proxy setup, restore, and forced parent death
+        run: cargo test --locked -p smart-vpn-desktop windows_real_proxy_restore_and_parent_death -- --ignored --test-threads=1
+        env:
+          FOXVPN_TEST_ALLOW_SYSTEM_PROXY: "1"
       - name: Frontend dependencies
         run: npm ci
         working-directory: apps/desktop

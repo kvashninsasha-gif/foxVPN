@@ -34,6 +34,10 @@ pub fn stop_if_current(
     else {
         return Ok(false);
     };
+    #[cfg(windows)]
+    if let Some(proxy) = current.proxy_session.as_mut() {
+        proxy.stop()?;
+    }
     current
         .local
         .as_mut()
@@ -256,6 +260,7 @@ mod tests {
             status: Arc::new(Mutex::new("connected".into())),
             gate: Arc::new(Mutex::new(())),
             measurements: Arc::new(Mutex::new(())),
+            proxy_error: Arc::new(Mutex::new(None)),
             wanted: Arc::new(ConnectionIntent::default()),
         };
         let old = state.wanted.request().unwrap();

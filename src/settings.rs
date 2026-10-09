@@ -10,6 +10,7 @@ pub struct Settings {
     pub tun: bool,
     pub kill_switch: bool,
     pub proxy_acknowledged: bool,
+    pub windows_proxy_auto: Option<bool>,
     pub proxy_port: u16,
     pub dns_protection: bool,
     pub dns_provider: String,
@@ -32,6 +33,7 @@ impl Default for Settings {
             tun: true,
             kill_switch: true,
             proxy_acknowledged: false,
+            windows_proxy_auto: None,
             proxy_port: 2080,
             dns_protection: true,
             dns_provider: "cloudflare".into(),
@@ -368,7 +370,10 @@ pub fn connection_plan(profile: &Profile) -> ConnectionPlan {
     {
         return ConnectionPlan::NeedsServer;
     }
-    if profile.settings.tun || profile.settings.kill_switch || !profile.settings.proxy_acknowledged
+    if profile.settings.tun
+        || profile.settings.kill_switch
+        || !profile.settings.proxy_acknowledged
+        || (cfg!(windows) && profile.settings.windows_proxy_auto.is_none())
     {
         return ConnectionPlan::NeedsProxyConsent;
     }
@@ -396,6 +401,9 @@ pub fn prepare_proxy(profile: &Profile, expected_selected: &str) -> Result<Profi
     next.settings.tun = false;
     next.settings.kill_switch = false;
     next.settings.proxy_acknowledged = true;
+    if cfg!(windows) && next.settings.windows_proxy_auto.is_none() {
+        next.settings.windows_proxy_auto = Some(false);
+    }
     next.validate()?;
     Ok(next)
 }

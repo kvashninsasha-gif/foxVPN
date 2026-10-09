@@ -6,6 +6,8 @@ mod metrics;
 #[cfg(target_os = "macos")]
 mod update_install;
 mod updates;
+#[cfg(any(windows, test))]
+mod windows_proxy_auto;
 use serde::Serialize;
 use smart_vpn_engine::{
     latency,
@@ -25,6 +27,8 @@ use tauri::{
     Emitter, Manager,
 };
 struct ActiveCore {
+    #[cfg(windows)]
+    proxy_session: Option<windows_proxy_auto::Session>,
     local: Option<CoreProcess>,
     proxy_port: u16,
     api_port: u16,
@@ -34,6 +38,8 @@ struct ActiveCore {
 impl ActiveCore {
     fn local(core: CoreProcess) -> Self {
         Self {
+            #[cfg(windows)]
+            proxy_session: None,
             proxy_port: core.proxy_port,
             api_port: core.api_port,
             secret: core.secret.clone(),
@@ -43,6 +49,8 @@ impl ActiveCore {
     }
     fn remote(status: smart_vpn_engine::network_helper::Status) -> Self {
         Self {
+            #[cfg(windows)]
+            proxy_session: None,
             local: None,
             proxy_port: status.proxy_port,
             api_port: status.api_port,
@@ -51,12 +59,24 @@ impl ActiveCore {
         }
     }
     fn alive(&mut self) -> bool {
+        #[cfg(windows)]
+        if self.proxy_session.as_mut().is_some_and(|p| !p.alive()) {
+            return false;
+        }
         match &mut self.local {
             Some(core) => core.alive(),
             None => smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Status,
             )
             .is_ok_and(|r| r.status.wanted),
+        }
+    }
+}
+#[cfg(windows)]
+impl Drop for ActiveCore {
+    fn drop(&mut self) {
+        if let Some(mut proxy) = self.proxy_session.take() {
+            let _ = proxy.stop();
         }
     }
 }
@@ -70,6 +90,7 @@ struct State {
     status: Arc<Mutex<String>>,
     gate: Arc<Mutex<()>>,
     measurements: Arc<Mutex<()>>,
+    proxy_error: Arc<Mutex<Option<String>>>,
     wanted: Arc<smart_vpn_engine::lifecycle::ConnectionIntent>,
 }
 #[derive(Serialize)]
@@ -169,7 +190,11 @@ async fn runtime(
     tauri::async_runtime::spawn_blocking(move || {
         let tun = s.profile.lock().unwrap().settings.tun;
         let mut core = s.core.lock().unwrap();
-        let mut connection_error = None;
+        let mut connection_error = s
+            .proxy_error
+            .lock()
+            .map_err(|_| "Не удалось прочитать состояние прокси")?
+            .clone();
         let mut active_server_id = None;
         if tun || core.as_ref().is_some_and(|c| c.local.is_none()) {
             match smart_vpn_engine::network_helper::request(
@@ -401,6 +426,16 @@ fn disconnect_for_ticket(s: &State, ticket: u64) -> Result<(), String> {
         .as_ref()
         .is_some_and(|c| c.local.is_none());
     let result = (|| {
+        #[cfg(windows)]
+        if let Some(proxy) = s
+            .core
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|c| c.proxy_session.as_mut())
+        {
+            proxy.stop()?;
+        }
         if let Some(local) = s
             .core
             .lock()
@@ -519,6 +554,16 @@ fn connect_locked(s: &State, ticket: u64) -> Result<u16, String> {
             return Err(smart_vpn_engine::text("connection_cancelled").into());
         }
         let port = core.proxy_port;
+        #[cfg(windows)]
+        let mut core = core;
+        #[cfg(windows)]
+        if p.settings.windows_proxy_auto == Some(true) {
+            core.proxy_session = Some(windows_proxy_auto::Session::start(port)?);
+        }
+        if !s.wanted.current(ticket) {
+            return Err(smart_vpn_engine::text("connection_cancelled").into());
+        }
+        *s.proxy_error.lock().unwrap() = None;
         *s.core.lock().unwrap() = Some(core);
         Ok(port)
     })();
@@ -535,12 +580,19 @@ fn connect_locked(s: &State, ticket: u64) -> Result<u16, String> {
     result
 }
 #[tauri::command]
-fn prepare_proxy(expected_selected: String, s: tauri::State<State>) -> Result<(), String> {
+fn prepare_proxy(
+    expected_selected: String,
+    windows_proxy_auto: Option<bool>,
+    s: tauri::State<State>,
+) -> Result<(), String> {
     edit(&s, |profile| {
         if s.core.lock().unwrap().is_some() {
             return Err(smart_vpn_engine::text("disconnect_first").into());
         }
         *profile = smart_vpn_engine::settings::prepare_proxy(profile, &expected_selected)?;
+        if cfg!(windows) {
+            profile.settings.windows_proxy_auto = Some(windows_proxy_auto.unwrap_or(false));
+        }
         Ok(())
     })
 }
@@ -836,6 +888,14 @@ fn write_private(path: &std::path::Path, text: &str) -> Result<(), String> {
         .map_err(|_| smart_vpn_engine::text("message_337").into())
 }
 fn main() {
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--foxvpn-proxy-guardian") {
+        std::process::exit(if windows_proxy_auto::guardian().is_ok() {
+            0
+        } else {
+            1
+        });
+    }
     let strings: serde_json::Value =
         serde_json::from_str(include_str!("../../../../locales/ru.json")).expect("Russian locale");
     let t = move |key: &str| strings[key].as_str().unwrap().to_string();
@@ -880,8 +940,13 @@ fn main() {
                 status: Arc::new(Mutex::new("disconnected".into())),
                 gate: Arc::new(Mutex::new(())),
                 measurements: Arc::new(Mutex::new(())),
+                proxy_error: Arc::new(Mutex::new(None)),
                 wanted: Arc::new(smart_vpn_engine::lifecycle::ConnectionIntent::default()),
             };
+            #[cfg(windows)]
+            if let Err(error) = windows_proxy_auto::Session::recover() {
+                *state.proxy_error.lock().unwrap() = Some(error);
+            }
             if let Ok(response) = smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Status,
             ) {

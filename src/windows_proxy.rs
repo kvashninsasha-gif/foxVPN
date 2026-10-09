@@ -213,3 +213,161 @@ mod tests {
         assert!(!matches_server("127.0.0.1:2081", 2080));
     }
 }
+
+/// Complete LAN/WinINet proxy configuration; kept private to local recovery files.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct Configuration {
+    pub flags: u32,
+    pub server: String,
+    pub bypass: String,
+    pub auto_url: String,
+}
+impl Configuration {
+    pub fn managed(&self, port: u16) -> Self {
+        Self {
+            flags: 3,
+            server: format!("127.0.0.1:{port}"),
+            ..self.clone()
+        }
+    }
+}
+#[cfg(windows)]
+pub fn configuration() -> Result<Configuration, String> {
+    use windows_sys::Win32::{Foundation::GlobalFree, Networking::WinInet::*};
+    let mut options = [
+        INTERNET_PER_CONN_FLAGS_UI,
+        INTERNET_PER_CONN_PROXY_SERVER,
+        INTERNET_PER_CONN_PROXY_BYPASS,
+        INTERNET_PER_CONN_AUTOCONFIG_URL,
+    ]
+    .map(|dwOption| INTERNET_PER_CONN_OPTIONW {
+        dwOption,
+        ..Default::default()
+    });
+    let mut list = INTERNET_PER_CONN_OPTION_LISTW {
+        dwSize: std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        dwOptionCount: options.len() as u32,
+        pOptions: options.as_mut_ptr(),
+        ..Default::default()
+    };
+    let mut size = list.dwSize;
+    if unsafe {
+        InternetQueryOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_PER_CONNECTION_OPTION,
+            (&mut list as *mut INTERNET_PER_CONN_OPTION_LISTW).cast(),
+            &mut size,
+        )
+    } == 0
+    {
+        return Err("Не удалось прочитать системный прокси Windows".into());
+    }
+    // WinINet allocates strings with GlobalAlloc; always release every returned buffer.
+    fn string(pointer: *mut u16) -> Result<String, String> {
+        if pointer.is_null() {
+            return Ok(String::new());
+        }
+        let result = unsafe {
+            let mut len = 0;
+            while len < 16384 && *pointer.add(len) != 0 {
+                len += 1;
+            }
+            if len == 16384 {
+                Err("Слишком длинные параметры прокси Windows".into())
+            } else {
+                String::from_utf16(std::slice::from_raw_parts(pointer, len))
+                    .map_err(|_| "Некорректные параметры прокси Windows".into())
+            }
+        };
+        unsafe {
+            GlobalFree(pointer.cast());
+        }
+        result
+    }
+    let server = string(unsafe { options[1].Value.pszValue });
+    let bypass = string(unsafe { options[2].Value.pszValue });
+    let auto_url = string(unsafe { options[3].Value.pszValue });
+    Ok(Configuration {
+        flags: unsafe { options[0].Value.dwValue },
+        server: server?,
+        bypass: bypass?,
+        auto_url: auto_url?,
+    })
+}
+#[cfg(windows)]
+pub fn set_configuration(config: &Configuration) -> Result<(), String> {
+    use windows_sys::Win32::Networking::WinInet::*;
+    if [&config.server, &config.bypass, &config.auto_url]
+        .iter()
+        .any(|v| v.contains('\0') || v.len() > 16384)
+        || config.flags & !15 != 0
+    {
+        return Err("Некорректные параметры прокси Windows".into());
+    }
+    let mut server: Vec<u16> = config.server.encode_utf16().chain(Some(0)).collect();
+    let mut bypass: Vec<u16> = config.bypass.encode_utf16().chain(Some(0)).collect();
+    let mut auto_url: Vec<u16> = config.auto_url.encode_utf16().chain(Some(0)).collect();
+    let mut options = [
+        INTERNET_PER_CONN_OPTIONW {
+            dwOption: INTERNET_PER_CONN_FLAGS,
+            Value: INTERNET_PER_CONN_OPTIONW_0 {
+                dwValue: config.flags,
+            },
+        },
+        INTERNET_PER_CONN_OPTIONW {
+            dwOption: INTERNET_PER_CONN_PROXY_SERVER,
+            Value: INTERNET_PER_CONN_OPTIONW_0 {
+                pszValue: server.as_mut_ptr(),
+            },
+        },
+        INTERNET_PER_CONN_OPTIONW {
+            dwOption: INTERNET_PER_CONN_PROXY_BYPASS,
+            Value: INTERNET_PER_CONN_OPTIONW_0 {
+                pszValue: bypass.as_mut_ptr(),
+            },
+        },
+        INTERNET_PER_CONN_OPTIONW {
+            dwOption: INTERNET_PER_CONN_AUTOCONFIG_URL,
+            Value: INTERNET_PER_CONN_OPTIONW_0 {
+                pszValue: auto_url.as_mut_ptr(),
+            },
+        },
+    ];
+    let list = INTERNET_PER_CONN_OPTION_LISTW {
+        dwSize: std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        dwOptionCount: options.len() as u32,
+        pOptions: options.as_mut_ptr(),
+        ..Default::default()
+    };
+    if unsafe {
+        InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_PER_CONNECTION_OPTION,
+            (&list as *const INTERNET_PER_CONN_OPTION_LISTW).cast(),
+            list.dwSize,
+        )
+    } == 0
+    {
+        return Err("Не удалось изменить системный прокси Windows".into());
+    }
+    let changed = unsafe {
+        InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_SETTINGS_CHANGED,
+            std::ptr::null(),
+            0,
+        )
+    };
+    let refreshed = unsafe {
+        InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_REFRESH,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if changed == 0 || refreshed == 0 {
+        return Err("Windows не подтвердила обновление параметров прокси".into());
+    }
+    Ok(())
+}
