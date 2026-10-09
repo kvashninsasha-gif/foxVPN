@@ -511,7 +511,9 @@ mod tests {
         parent.kill().unwrap();
         parent.wait().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
-        while Windows.read().unwrap() != original && Instant::now() < deadline {
+        while (Windows.read().unwrap() != original || path().unwrap().exists())
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(Windows.read().unwrap(), original);
