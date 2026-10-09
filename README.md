@@ -2,17 +2,21 @@
 
 VPN-клиент с русским интерфейсом, VLESS/Reality, тёмной темой и правилами маршрутизации.
 
-[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.18/foxVPN_0.1.18_x64-setup.exe)
-[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.18/foxVPN-0.1.18-macOS-arm64.zip)
+[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.19/foxVPN_0.1.19_x64-setup.exe)
+[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.19/foxVPN-0.1.19-macOS-arm64.zip)
 
-**Последняя проверенная сборка: 0.1.18 · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.18).
+**Последняя проверенная сборка: 0.1.19 · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.19).
 
 | Платформа | Что доступно | Первый запуск |
 | --- | --- | --- |
 | Windows x64 | Локальный HTTP/SOCKS-прокси с автоматической настройкой браузеров после согласия и восстановлением прежних параметров. Системный VPN и Kill Switch ещё не реализованы | [Установка и проверка подключения](docs/windows-test-guide.md) |
 | macOS Apple Silicon | VPN всего Mac через сетевой компонент, локальный прокси и правила маршрутизации | Распакуйте ZIP, перенесите foxVPN.app в Applications; сетевой компонент устанавливается из настроек приложения |
 
-Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.18](docs/verification-0.1.18.md).
+Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.19](docs/verification-0.1.19.md).
+
+## Проверить и настроить
+
+На «Обзоре» и в «Настройках» обеих платформ есть кнопка «Проверить и настроить»: проверяет ядро, серверы и текущее соединение, затем предлагает конкретное действие. Установка компонента macOS и изменение прокси Windows требуют отдельного согласия. Проверка работающего VPN его не прерывает.
 
 ## Обновления macOS с подтверждением
 
