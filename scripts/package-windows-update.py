@@ -16,7 +16,7 @@ if installer.name!=f'foxVPN_{version}_x64-setup.exe' or not installer.read_bytes
 proof_path=installer.parent/'windows-core-startup.json'
 if not proof_path.is_file():raise SystemExit('Installed-core startup proof from the Windows runner is required before signing')
 proof=json.loads(proof_path.read_text(encoding='utf-8-sig'))
-if proof.get('installer_sha256')!=hashlib.sha256(installer.read_bytes()).hexdigest() or proof.get('installer_version')!=version:
+if proof.get('installer_sha256')!=hashlib.sha256(installer.read_bytes()).hexdigest() or proof.get('installer_version')!=version or proof.get('engine_version')!=version:
  raise SystemExit('Startup proof does not match this exact installer/version')
 if len(proof.get('cores',[]))!=1 or len(set(proof['cores'][0].get('cases',[])))!=72 or not proof['cores'][0].get('legacy_rejected'):
  raise SystemExit('Incomplete installed-core startup proof')

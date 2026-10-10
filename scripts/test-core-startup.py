@@ -99,7 +99,12 @@ def main():
     args.report.unlink(missing_ok=True)  # even missing inputs invalidate stale success
     generator = args.generator.resolve(strict=True)
     cores = [p.resolve(strict=True) for p in args.core]
-    cases = json.loads(subprocess.check_output([str(generator)], timeout=15))
+    fixtures = json.loads(subprocess.check_output([str(generator)], timeout=15))
+    root = Path(__file__).resolve().parent.parent
+    version = json.loads((root / 'apps/desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))['version']
+    if fixtures.get('engine_version') != version:
+        raise RuntimeError('Fixture generator version differs from the release; rebuild it')
+    cases = fixtures['cases']
     if len(cases) != 72 or len({c['name'] for c in cases}) != 72:
         raise RuntimeError('Expected all 72 distinct production startup cases')
     legacy = next(c['config'] for c in cases if c['name'] == 'tun-dns-Smart-cloudflare-https')
@@ -121,7 +126,7 @@ def main():
                         'cases': [case['name'] for case in cases], 'legacy_rejected': True})
         print(f'{core.name}: 72 startup cases passed; legacy runtime failure reproduced', flush=True)
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps({'cores': results}, indent=2) + '\n', encoding='utf-8')
+    args.report.write_text(json.dumps({'engine_version': version, 'cores': results}, indent=2) + '\n', encoding='utf-8')
 
 
 if __name__ == '__main__':

@@ -4,6 +4,6 @@ mod startup_cases;
 fn main() {
     println!(
         "{}",
-        serde_json::to_string(&startup_cases::cases()).unwrap()
+        serde_json::json!({"engine_version": env!("CARGO_PKG_VERSION"), "cases": startup_cases::cases()})
     );
 }
