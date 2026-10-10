@@ -1276,6 +1276,13 @@ fn main() {
         .build(tauri::generate_context!())
         .unwrap_or_else(|_| panic!("{}", smart_vpn_engine::text("message_345")))
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(&event, tauri::RunEvent::Reopen { .. }) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
                 let installing = app
                     .state::<State>()

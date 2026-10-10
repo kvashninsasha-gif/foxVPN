@@ -32,11 +32,34 @@ fn report(status: &ipc::Status) -> Result<String, String> {
 pub fn run(argument: &str) -> Option<Result<String, String>> {
     if !matches!(
         argument,
-        "--foxvpn-network-status" | "--foxvpn-network-connect" | "--foxvpn-network-stop"
+        "--foxvpn-network-status"
+            | "--foxvpn-network-connect"
+            | "--foxvpn-network-stop"
+            | "--foxvpn-network-installer"
     ) {
         return None;
     }
     Some((|| {
+        #[cfg(target_os = "macos")]
+        if argument == "--foxvpn-network-installer" {
+            let exe = std::env::current_exe().map_err(|_| "Не найдено приложение")?;
+            let contents = exe
+                .parent()
+                .and_then(|p| p.parent())
+                .ok_or("Запустите установленное приложение")?;
+            let bundle = contents.parent().ok_or("Не найдено приложение")?;
+            if !std::process::Command::new("codesign")
+                .args(["--verify", "--deep", "--strict"])
+                .arg(bundle)
+                .status()
+                .map_err(|_| "Не удалось проверить подпись приложения")?
+                .success()
+            {
+                return Err("Подпись приложения не прошла проверку".into());
+            }
+            return ipc::create_installer(&contents.join("Resources"))
+                .map(|path| path.display().to_string());
+        }
         ipc::require_current()?;
         if argument == "--foxvpn-network-stop" {
             let status = ipc::request(&ipc::Request::Stop)?.status;
