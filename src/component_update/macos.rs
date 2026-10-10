@@ -47,6 +47,7 @@ struct Ready {
 pub struct Store {
     root: PathBuf,
     file_uid: u32,
+    uploads: PathBuf,
 }
 pub struct Lock(File);
 struct ProbeChild(std::process::Child);
@@ -145,6 +146,7 @@ impl Store {
         let store = Self {
             root: PathBuf::from(BASE),
             file_uid: 0,
+            uploads: PathBuf::from(UPLOADS),
         };
         owned(&store.root, 0, true)?;
         Ok(store)
@@ -223,7 +225,7 @@ impl Store {
             return Err(INVALID.into());
         }
         let input = Path::new(&request.archive);
-        let allowed = Path::new(UPLOADS).join(old.owner.to_string());
+        let allowed = self.uploads.join(old.owner.to_string());
         let name = input.file_name().and_then(|s| s.to_str()).ok_or(INVALID)?;
         if input.parent() != Some(allowed.as_path())
             || name.len() > 128
@@ -634,6 +636,7 @@ mod tests {
         let store = Store {
             root: dir.path().to_owned(),
             file_uid: unsafe { libc::getuid() },
+            uploads: dir.path().join("uploads"),
         };
         fs::create_dir(store.slot()).unwrap();
         write_json(&store.slot().join("binding.json"), &binding("0.1.23", 'a')).unwrap();
@@ -742,5 +745,39 @@ mod tests {
         fs::remove_dir_all(store.root.join(&t.backup)).unwrap();
         assert!(!store.restore(&t).unwrap());
         assert!(store.transaction().unwrap().is_none());
+    }
+    #[test]
+    #[ignore = "Run with FOXVPN_COMPONENT_TEST_ARCHIVE for a signed release newer than 0.1.23; temp files only"]
+    fn actual_signed_bundle_is_prepared_without_changing_system_component() {
+        let archive = std::env::var("FOXVPN_COMPONENT_TEST_ARCHIVE").unwrap();
+        let version = std::env::var("FOXVPN_COMPONENT_TEST_VERSION").unwrap();
+        let (_dir, store) = store();
+        let mut old = binding("0.1.23", 'a');
+        old.owner = unsafe { libc::getuid() };
+        write_json(&store.slot().join("binding.json"), &old).unwrap();
+        let dropbox = store.uploads.join(old.owner.to_string());
+        fs::create_dir_all(&dropbox).unwrap();
+        fs::set_permissions(&dropbox, fs::Permissions::from_mode(0o700)).unwrap();
+        let input = dropbox.join("foxvpn-update-fixture.tar.gz");
+        fs::copy(&archive, &input).unwrap();
+        let request = InstallRequest {
+            archive: input.to_str().unwrap().into(),
+            signature: fs::read_to_string(format!("{archive}.sig")).unwrap(),
+            version: version.clone(),
+        };
+        let slot = store.prepare(&request, &old.current).unwrap().unwrap();
+        assert_eq!(slot.binding.version, version);
+        assert_eq!(slot.binding.owner, old.owner);
+        assert_eq!(slot.binding.previous.as_deref(), Some(old.current.as_str()));
+        assert!(slot.backup.join("helper").is_file());
+        assert!(slot.backup.join("core").is_file());
+        assert_eq!(store.binding().unwrap().version, "0.1.23");
+        assert_eq!(store.floor().unwrap().version, "0.1.23");
+        let mut wrong = request.clone();
+        wrong.archive = archive;
+        assert!(store.prepare(&wrong, &old.current).is_err());
+        let mut wrong = request;
+        wrong.version = "999.0.0".into();
+        assert!(store.prepare(&wrong, &old.current).is_err());
     }
 }
