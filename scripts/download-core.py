@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Download pinned official sing-box, validate GitHub release SHA256, extract executable."""
-import argparse,hashlib,json,platform,pathlib,tarfile,zipfile,io,urllib.request,sys
+import argparse,hashlib,json,os,platform,pathlib,tarfile,zipfile,io,urllib.request,sys
 # Redirected Windows stdout may default to cp1252 and reject Russian messages.
 for stream in (sys.stdout,sys.stderr):
  if hasattr(stream,"reconfigure"):stream.reconfigure(encoding="utf-8",errors="replace")
@@ -8,7 +8,11 @@ VERSION="1.14.2"
 a=argparse.ArgumentParser();a.add_argument('--platform',choices=['darwin-arm64','darwin-amd64','windows-amd64']);args=a.parse_args()
 name=args.platform or (('windows' if platform.system()=='Windows' else 'darwin')+'-'+('arm64' if platform.machine().lower() in ('arm64','aarch64') else 'amd64'))
 root=pathlib.Path(__file__).resolve().parents[1];suffix='.zip' if name.startswith('windows') else '.tar.gz';filename=f'sing-box-{VERSION}-{name}{suffix}'
-request=urllib.request.Request(f'https://api.github.com/repos/SagerNet/sing-box/releases/tags/v{VERSION}',headers={'User-Agent':'SmartVPN-build'})
+headers={'User-Agent':'SmartVPN-build'}
+# Scoped runner token is sent only to the GitHub API request, never to asset
+# downloads/redirects or logs. Public unauthenticated runner IPs hit rate limits.
+if os.environ.get('GITHUB_TOKEN'):headers['Authorization']='Bearer '+os.environ['GITHUB_TOKEN']
+request=urllib.request.Request(f'https://api.github.com/repos/SagerNet/sing-box/releases/tags/v{VERSION}',headers=headers)
 release=json.load(urllib.request.urlopen(request,timeout=30));asset=next((x for x in release['assets'] if x['name']==filename),None)
 if not asset:raise SystemExit('В официальном релизе нет нужного архива')
 expected=asset.get('digest','')

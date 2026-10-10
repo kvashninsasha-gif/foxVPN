@@ -32,6 +32,8 @@ jobs:
           python-version: '3.12'
       - name: Download and verify pinned Windows core
         run: python scripts/download-core.py --platform windows-amd64
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Rust tests with real local VLESS and core schema checks
         run: cargo test --locked --workspace
         env:

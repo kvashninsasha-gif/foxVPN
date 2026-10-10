@@ -26,6 +26,8 @@ jobs:
           python-version: '3.12'
       - name: Download verified pinned core for runner architecture
         run: python3 scripts/download-core.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Engine tests with real core
         run: cargo test --locked -p smart-vpn-engine
         env:
