@@ -21,6 +21,15 @@ int fox_self_hash(char *out) {
  if (SecCodeCopySelf(kSecCSDefaultFlags,&code)!=errSecSuccess) return 0;
  int result=hashForCode(code,out); CFRelease(code); return result; }
 }
+int fox_bundle_hash(const char *path, char *out) {
+ @autoreleasepool {
+ NSURL *url=[NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+ SecStaticCodeRef code=NULL;
+ if(SecStaticCodeCreateWithPath((__bridge CFURLRef)url,kSecCSDefaultFlags,&code)!=errSecSuccess) return 0;
+ int ok=SecStaticCodeCheckValidity(code,kSecCSStrictValidate|kSecCSCheckAllArchitectures,NULL)==errSecSuccess && hashForCode((SecCodeRef)code,out);
+ CFRelease(code); return ok;
+ }
+}
 int fox_verify_socket(int fd, const char *expected, unsigned int owner) {
  @autoreleasepool {
  audit_token_t token; socklen_t size=sizeof(token);

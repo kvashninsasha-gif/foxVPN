@@ -12,6 +12,7 @@ on:
       - 'locales/**'
       - 'scripts/download-core.py'
       - 'scripts/test-core-startup.py'
+      - 'macos/**'
 permissions:
   contents: read
 jobs:

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -31,6 +32,12 @@ resources = bundle / 'Contents/Resources/network'
 resources.mkdir(parents=True, exist_ok=True)
 for name in ['foxvpn-helper', 'foxvpn-network-core', 'network-version.json']:
     shutil.copy2(root / 'core' / name, resources / name)
+version = json.loads((root / 'apps/desktop/src-tauri/tauri.conf.json').read_text())['version']
+protocol = int(re.search(r'pub const PROTOCOL: u32 = (\d+);', (root / 'src/network_helper.rs').read_text()).group(1))
+actual = json.loads(subprocess.check_output([str(resources / 'foxvpn-helper'), '--component-version'], timeout=15))
+if actual != {'version': version, 'protocol': protocol}:
+    raise SystemExit('Packaged helper version/protocol differs from the app; rebuild it')
+(resources / 'component-version.json').write_text(json.dumps({'version': version, 'protocol': protocol}, indent=2)+'\n')
 subprocess.run(['codesign', '--force', '--sign', args.identity, '--options', 'runtime', str(bundle)], check=True)
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(bundle)], check=True)
 print('App sealed; pinned network resources and Hardened Runtime verified')

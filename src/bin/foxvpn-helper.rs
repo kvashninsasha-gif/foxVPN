@@ -5,7 +5,6 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod daemon {
     use serde::{Deserialize, Serialize};
-    use sha2::{Digest, Sha256};
     use smart_vpn_engine::{
         network_helper::{self as ipc, Request, Response, StartRequest, Status, CORE_UID},
         vpn::CoreProcess,
@@ -23,7 +22,7 @@ mod daemon {
         sync::atomic::{AtomicBool, Ordering},
         time::{Duration, Instant},
     };
-    const NETWORK: &str = "/Library/PrivilegedHelperTools/foxVPN";
+    const NETWORK: &str = smart_vpn_engine::component_update::SLOT;
     const ANCHOR: &str = "com.apple/ru.smartvpn.router";
     static SHUTDOWN: AtomicBool = AtomicBool::new(false);
     unsafe extern "C" {
@@ -160,10 +159,14 @@ mod daemon {
         let mut bytes = [0u8; 4096];
         let len =
             unsafe { proc_pidpath(pid as i32, bytes.as_mut_ptr().cast(), bytes.len() as u32) };
+        let path = String::from_utf8_lossy(&bytes[..(len as usize).min(bytes.len())]);
         len > 0
-            && String::from_utf8_lossy(&bytes[..(len as usize).min(bytes.len())])
-                .trim_end_matches('\0')
-                == format!("{NETWORK}/core")
+            && [
+                format!("{NETWORK}/core"),
+                "/Library/PrivilegedHelperTools/foxVPN/core".into(),
+            ]
+            .iter()
+            .any(|allowed| path.trim_end_matches('\0') == allowed)
     }
     impl Manager {
         fn status(&mut self) -> Status {
@@ -444,43 +447,16 @@ mod daemon {
             libc::signal(libc::SIGTERM, terminated as *const () as libc::sighandler_t);
             libc::signal(libc::SIGINT, terminated as *const () as libc::sighandler_t);
         }
-        let base = PathBuf::from(NETWORK);
-        for path in [
-            base.join("core"),
-            base.join("client.cdhash"),
-            base.join("client.uid"),
-            base.join("network-version.json"),
-        ] {
-            let m = fs::symlink_metadata(path).map_err(|_| message("helper_invalid"))?;
-            if !m.is_file() || m.uid() != 0 || m.mode() & 0o022 != 0 {
-                return Err(message("helper_invalid"));
-            }
+        let store = smart_vpn_engine::component_update::macos::Store::system()?;
+        if std::env::args().any(|arg| arg == "--component-watchdog") {
+            return store.watchdog();
         }
-        let info: serde_json::Value = serde_json::from_slice(
-            &fs::read(base.join("network-version.json")).map_err(|_| message("helper_invalid"))?,
-        )
-        .map_err(|_| message("helper_invalid"))?;
-        if format!(
-            "{:x}",
-            Sha256::digest(fs::read(base.join("core")).map_err(|_| message("helper_invalid"))?)
-        ) != info["binary_sha256"].as_str().unwrap_or("")
-        {
-            return Err(message("helper_core_hash"));
-        }
+        let binding = store.validate_slot()?;
+        let owner = binding.owner;
         if !unsafe { libc::getpwuid(CORE_UID) }.is_null() {
             return Err(message("helper_uid_conflict"));
         }
-        let hash = fs::read_to_string(base.join("client.cdhash"))
-            .map_err(|_| message("helper_invalid"))?;
-        if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(message("helper_invalid"));
-        }
-        let expected = std::ffi::CString::new(hash).map_err(|_| message("helper_invalid"))?;
-        let owner: u32 = fs::read_to_string(base.join("client.uid"))
-            .map_err(|_| message("helper_owner"))?
-            .parse()
-            .map_err(|_| message("helper_owner"))?;
-        if !ipc::valid_owner(owner) || unsafe { libc::getpwuid(owner) }.is_null() {
+        if unsafe { libc::getpwuid(owner) }.is_null() {
             return Err(message("helper_owner"));
         }
         fs::create_dir_all("/var/run/foxvpn/private")
@@ -488,6 +464,30 @@ mod daemon {
         fs::set_permissions("/var/run/foxvpn", fs::Permissions::from_mode(0o755))
             .map_err(|_| message("helper_system_error"))?;
         fs::set_permissions("/var/run/foxvpn/private", fs::Permissions::from_mode(0o700))
+            .map_err(|_| message("helper_system_error"))?;
+        let uploads = PathBuf::from(smart_vpn_engine::component_update::UPLOADS);
+        fs::create_dir_all(&uploads).map_err(|_| message("helper_system_error"))?;
+        let parent = fs::symlink_metadata(&uploads).map_err(|_| message("helper_invalid"))?;
+        if !parent.is_dir() || parent.uid() != 0 || parent.mode() & 0o022 != 0 {
+            return Err(message("helper_invalid"));
+        }
+        fs::set_permissions(&uploads, fs::Permissions::from_mode(0o755))
+            .map_err(|_| message("helper_system_error"))?;
+        let dropbox = uploads.join(owner.to_string());
+        if dropbox.exists() {
+            let m = fs::symlink_metadata(&dropbox).map_err(|_| message("helper_invalid"))?;
+            if !m.is_dir() || m.uid() != owner || m.mode() & 0o022 != 0 {
+                return Err(message("helper_invalid"));
+            }
+        } else {
+            fs::create_dir(&dropbox).map_err(|_| message("helper_system_error"))?;
+            let path = std::ffi::CString::new(dropbox.to_string_lossy().as_bytes())
+                .map_err(|_| message("helper_invalid"))?;
+            if unsafe { libc::chown(path.as_ptr(), owner, 0) } != 0 {
+                return Err(message("helper_owner"));
+            }
+        }
+        fs::set_permissions(&dropbox, fs::Permissions::from_mode(0o700))
             .map_err(|_| message("helper_system_error"))?;
         let mut saved: Saved = fs::read("/var/run/foxvpn/private/session.json")
             .ok()
@@ -552,11 +552,29 @@ mod daemon {
         listener
             .set_nonblocking(true)
             .map_err(|_| message("helper_system_error"))?;
+        store.ready()?;
         while !SHUTDOWN.load(Ordering::SeqCst) {
             if let Ok((mut stream, _)) = listener.accept() {
-                if unsafe { fox_verify_socket(stream.as_raw_fd(), expected.as_ptr(), owner) } != 1 {
+                let binding = store.binding()?;
+                let expected = std::ffi::CString::new(binding.current.clone())
+                    .map_err(|_| message("helper_invalid"))?;
+                let current_peer =
+                    unsafe { fox_verify_socket(stream.as_raw_fd(), expected.as_ptr(), owner) } == 1;
+                let peer_hash = if current_peer {
+                    binding.current.as_str()
+                } else if let Some(previous) = binding.previous.as_deref() {
+                    let previous_c =
+                        std::ffi::CString::new(previous).map_err(|_| message("helper_invalid"))?;
+                    if unsafe { fox_verify_socket(stream.as_raw_fd(), previous_c.as_ptr(), owner) }
+                        != 1
+                    {
+                        continue;
+                    }
+                    previous
+                } else {
                     continue;
-                }
+                };
+                let mut restart = false;
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
                 let mut body = Vec::new();
@@ -578,6 +596,23 @@ mod daemon {
                                 (Some(message("test_requires_guard")), vec![])
                             }
                         }
+                        Ok(Request::InstallUpdate(request)) => {
+                            let result = (|| {
+                                let _lock = store.lock()?;
+                                let prepared = store.prepare(&request, peer_hash)?;
+                                if let Some(prepared) = prepared {
+                                    manager.stop()?;
+                                    if !manager.status().stopped() {
+                                        return Err(message("helper_stop_unconfirmed"));
+                                    }
+                                    store.commit(prepared)?;
+                                }
+                                restart = request.version != env!("CARGO_PKG_VERSION");
+                                Ok::<(), String>(())
+                            })();
+                            (result.err(), vec![])
+                        }
+                        Ok(Request::FinalizeUpdate) => (store.finalize(current_peer).err(), vec![]),
                         Ok(Request::Status) => (None, vec![]),
                         Ok(Request::Logs) => (
                             None,
@@ -600,6 +635,17 @@ mod daemon {
                     if let Ok(bytes) = serde_json::to_vec(&response) {
                         let _ = stream.write_all(&bytes);
                     }
+                }
+                if restart {
+                    use std::os::unix::process::CommandExt;
+                    // The fixed slot was independently authenticated and atomically
+                    // exchanged. launchd keeps supervising this PID after exec.
+                    let error = Command::new(format!("{NETWORK}/helper")).exec();
+                    manager.error = Some(format!(
+                        "Не удалось перезапустить компонент: {}",
+                        error.kind()
+                    ));
+                    // Watchdog restores the known-good slot if startup never completes.
                 }
             }
             manager.maintain();
@@ -701,6 +747,13 @@ mod daemon {
 }
 #[cfg(target_os = "macos")]
 fn main() {
+    if std::env::args().skip(1).collect::<Vec<_>>() == ["--component-version"] {
+        println!(
+            "{}",
+            serde_json::json!({"version": env!("CARGO_PKG_VERSION"), "protocol": smart_vpn_engine::network_helper::PROTOCOL})
+        );
+        return;
+    }
     if let Err(error) = daemon::run() {
         eprintln!("foxVPN: {error}");
         std::process::exit(1);

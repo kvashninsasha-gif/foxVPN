@@ -154,6 +154,29 @@ pub async fn update_state(
         smart_vpn_engine::network_helper::Probe::Ready
     };
     let ready = component == smart_vpn_engine::network_helper::Probe::Ready;
+    #[cfg(target_os = "macos")]
+    if ready {
+        let is_current = smart_vpn_engine::component_update::macos::public_binding()
+            .and_then(|b| {
+                smart_vpn_engine::network_helper::self_hash().map(|hash| b.current == hash)
+            })
+            .unwrap_or(false);
+        if is_current {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                for _ in 0..20 {
+                    if smart_vpn_engine::network_helper::request(
+                        &smart_vpn_engine::network_helper::Request::FinalizeUpdate,
+                    )
+                    .is_ok()
+                    {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            })
+            .await;
+        }
+    }
     if pending && ready {
         prefs.pending_version = None;
         let _ = state.write(&prefs);
@@ -333,6 +356,10 @@ pub async fn install_app_update(
         let target = crate::update_install::app_path(
             &std::env::current_exe().map_err(|_| "Не найдено установленное приложение.")?,
         )?;
+        let update_component = smart_vpn_engine::network_helper::installed();
+        if update_component {
+            smart_vpn_engine::network_helper::require_current()?;
+        }
         update.timeout = Some(std::time::Duration::from_secs(600));
         let signal = std::sync::Arc::new(tokio::sync::Notify::new());
         *updates.cancel.lock().unwrap() = Some(signal.clone());
@@ -385,11 +412,38 @@ pub async fn install_app_update(
             },
         );
         let v = version.clone();
+        // This file is outside WebView control and inside the fixed per-owner
+        // dropbox created by the root service. Root verifies the signature again.
+        let archive_file = if update_component {
+            use std::io::Write;
+            let dropbox = std::path::Path::new(smart_vpn_engine::component_update::UPLOADS)
+                .join(unsafe { libc::getuid() }.to_string());
+            let mut file = tempfile::Builder::new()
+                .prefix("foxvpn-update-")
+                .suffix(".tar.gz")
+                .tempfile_in(dropbox)
+                .map_err(|_| "Не удалось подготовить совместное обновление компонента.")?;
+            file.write_all(&bytes)
+                .and_then(|_| file.as_file().sync_all())
+                .map_err(|_| "Не удалось сохранить проверенный архив.")?;
+            Some(file)
+        } else {
+            None
+        };
+        let component_request =
+            archive_file
+                .as_ref()
+                .map(|file| smart_vpn_engine::component_update::InstallRequest {
+                    archive: file.path().to_string_lossy().into_owned(),
+                    signature: update.signature.clone(),
+                    version: version.clone(),
+                });
         let prepared = tauri::async_runtime::spawn_blocking(move || {
             crate::update_install::prepare(&bytes, &target, &v)
         })
         .await
         .map_err(|_| "Не удалось подготовить обновление.")??;
+        let expected_hash = prepared.expected_hash()?;
         if signal.notified().now_or_never().is_some() {
             return Err("Установка отменена. Приложение и VPN не менялись.".into());
         }
@@ -397,7 +451,7 @@ pub async fn install_app_update(
         // Persist recovery marker before replacement, while keeping the old preferences for rollback.
         let old = updates.read()?;
         let mut next = old.clone();
-        next.pending_version = if vpn.profile.lock().unwrap().settings.tun {
+        next.pending_version = if update_component || vpn.profile.lock().unwrap().settings.tun {
             Some(version)
         } else {
             None
@@ -414,10 +468,30 @@ pub async fn install_app_update(
             },
         );
         let state = vpn.inner().clone();
+        let app_progress = app.clone();
         let result = tauri::async_runtime::spawn_blocking(move || {
             let result = (|| {
                 state.vault.save(&state.profile.lock().unwrap())?;
                 crate::disconnect(&state)?;
+                if let Some(request) = component_request {
+                    let _ = app_progress.emit(
+                        "app-update-progress",
+                        Progress {
+                            stage: "component",
+                            downloaded: 0,
+                            total: None,
+                        },
+                    );
+                    smart_vpn_engine::network_helper::install_update(request, &expected_hash)?;
+                    let _ = app_progress.emit(
+                        "app-update-progress",
+                        Progress {
+                            stage: "installing",
+                            downloaded: 0,
+                            total: None,
+                        },
+                    );
+                }
                 prepared.commit().map(|_| ())
             })();
             if result.is_err() {

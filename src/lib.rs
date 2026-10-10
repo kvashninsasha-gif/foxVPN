@@ -18,6 +18,7 @@ pub fn text(key: &str) -> &'static str {
         .unwrap_or("Неизвестное сообщение")
 }
 
+pub mod component_update;
 pub mod network_helper;
 pub mod user_files;
 

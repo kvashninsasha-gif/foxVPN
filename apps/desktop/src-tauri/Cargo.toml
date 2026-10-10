@@ -1,6 +1,6 @@
 [package]
 name = "smart-vpn-desktop"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 license = "GPL-3.0-only"
 [build-dependencies]
@@ -27,6 +27,7 @@ flate2 = "1"
 tar = "0.4"
 tempfile = "3"
 plist = "1"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

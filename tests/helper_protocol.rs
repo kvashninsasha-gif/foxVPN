@@ -66,6 +66,26 @@ fn old_helpers_cannot_confirm_a_stop_or_enable_new_capabilities() {
     }
 }
 #[test]
+fn component_compatibility_uses_protocol_instead_of_every_app_release_number() {
+    let current = Status {
+        protocol: PROTOCOL,
+        helper_version: "0.1.99".into(),
+        ..Default::default()
+    };
+    assert!(current.compatible());
+    assert!(current.stopped());
+    assert!(!Status {
+        protocol: PROTOCOL - 1,
+        ..current.clone()
+    }
+    .compatible());
+    assert!(!Status {
+        helper_version: "invalid".into(),
+        ..current
+    }
+    .compatible());
+}
+#[test]
 fn a_helper_owner_must_be_a_normal_mac_user() {
     for uid in [0, 1, 500, CORE_UID, 65534, u32::MAX] {
         assert!(!valid_owner(uid));
@@ -159,15 +179,16 @@ fn installer_contains_the_current_owner_and_signature_without_a_profile() {
         .status()
         .unwrap()
         .success());
-    let network = expanded.join("Payload/Library/PrivilegedHelperTools/foxVPN");
+    let network = expanded.join("Payload/Library/PrivilegedHelperTools/foxVPN/component");
+    let binding: smart_vpn_engine::component_update::Binding =
+        serde_json::from_slice(&fs::read(network.join("binding.json")).unwrap()).unwrap();
+    assert_eq!(binding.owner, unsafe { libc::getuid() });
     assert_eq!(
-        fs::read_to_string(network.join("client.uid")).unwrap(),
-        unsafe { libc::getuid() }.to_string()
-    );
-    assert_eq!(
-        fs::read_to_string(network.join("client.cdhash")).unwrap(),
+        binding.current,
         smart_vpn_engine::network_helper::self_hash().unwrap()
     );
+    assert_eq!(binding.previous, None);
+    assert_eq!(binding.protocol, smart_vpn_engine::network_helper::PROTOCOL);
     let mut names = fs::read_dir(network)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -175,14 +196,14 @@ fn installer_contains_the_current_owner_and_signature_without_a_profile() {
     names.sort();
     assert_eq!(
         names,
-        [
-            "client.cdhash",
-            "client.uid",
-            "core",
-            "network-version.json"
-        ]
+        ["binding.json", "core", "helper", "network-version.json"]
     );
+    assert!(fs::read_to_string(
+        expanded.join("Payload/Library/LaunchDaemons/ru.smartvpn.router.network.plist")
+    )
+    .unwrap()
+    .contains("/foxVPN/component/helper"));
     assert!(fs::read_to_string(expanded.join("Scripts/postinstall"))
         .unwrap()
-        .contains("/foxVPN/client.uid"));
+        .contains("/foxVPN/component/binding.json"));
 }

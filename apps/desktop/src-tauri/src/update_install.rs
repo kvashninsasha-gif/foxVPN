@@ -98,6 +98,7 @@ pub fn prepare(bytes: &[u8], target: &Path, version: &str) -> Result<Prepared, S
         "network/foxvpn-helper",
         "network/foxvpn-network-core",
         "network/network-version.json",
+        "network/component-version.json",
     ] {
         if !app.join("Contents/Resources").join(name).is_file() {
             return Err("Обновление не содержит ядро или сетевой компонент.".into());
@@ -109,6 +110,11 @@ pub fn prepare(bytes: &[u8], target: &Path, version: &str) -> Result<Prepared, S
     })
 }
 impl Prepared {
+    pub fn expected_hash(&self) -> Result<String, String> {
+        smart_vpn_engine::component_update::macos::bundle_hash(
+            &self.stage.path().join("foxVPN.app"),
+        )
+    }
     pub fn commit(self) -> Result<PathBuf, String> {
         let backup = self
             .target

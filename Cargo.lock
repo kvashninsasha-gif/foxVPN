@@ -3735,11 +3735,12 @@ dependencies = [
 
 [[package]]
 name = "smart-vpn-desktop"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "base64 0.22.1",
  "flate2",
  "futures-util",
+ "libc",
  "minisign-verify",
  "plist",
  "semver",
@@ -3761,18 +3762,24 @@ dependencies = [
 
 [[package]]
 name = "smart-vpn-engine"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "flate2",
  "keyring",
  "libc",
+ "minisign-verify",
  "percent-encoding",
+ "plist",
  "rand 0.8.8",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
+ "tar",
+ "tempfile",
  "url",
  "uuid",
  "windows-sys 0.61.2",

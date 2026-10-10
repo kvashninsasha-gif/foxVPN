@@ -1,8 +1,11 @@
 #!/bin/sh
 set -eu
-for path in /Library/PrivilegedHelperTools/foxVPN /Library/PrivilegedHelperTools/ru.smartvpn.router.network /Library/LaunchDaemons/ru.smartvpn.router.network.plist /Library/Logs/foxVPN-network.log; do
+for path in /Library/PrivilegedHelperTools/foxVPN /Library/PrivilegedHelperTools/foxVPN/component /Library/PrivilegedHelperTools/foxVPN/component/helper /Library/PrivilegedHelperTools/foxVPN/component/core /Library/PrivilegedHelperTools/foxVPN/component/binding.json /Library/PrivilegedHelperTools/foxVPN/component/network-version.json /Library/PrivilegedHelperTools/foxVPN/floor.json /Library/PrivilegedHelperTools/foxVPN/transaction.json /Library/PrivilegedHelperTools/ru.smartvpn.router.network /Library/LaunchDaemons/ru.smartvpn.router.network.plist /Library/Logs/foxVPN-network.log; do
  if [ -L "$path" ]; then echo 'foxVPN: refusing a symbolic link in the install destination' >&2; exit 1; fi
  if [ -e "$path" ] && [ "$(/usr/bin/stat -f %u "$path")" != 0 ]; then echo 'foxVPN: install destination is not root-owned' >&2; exit 1; fi
 done
+if [ -e /Library/PrivilegedHelperTools/foxVPN/transaction.json ]; then
+ echo 'foxVPN: finish the pending in-app update before running a manual component installer' >&2; exit 1
+fi
 /bin/launchctl bootout system/ru.smartvpn.router.network 2>/dev/null || true
 exit 0

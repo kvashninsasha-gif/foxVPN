@@ -24,6 +24,8 @@ pub enum Request {
     Stop,
     Logs,
     TestRecovery,
+    InstallUpdate(crate::component_update::InstallRequest),
+    FinalizeUpdate,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,10 +44,12 @@ pub struct Status {
     pub interface: String,
     pub active_server_id: Option<String>,
 }
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 impl Status {
     pub fn compatible(&self) -> bool {
-        self.protocol == PROTOCOL && self.helper_version == env!("CARGO_PKG_VERSION")
+        self.protocol == PROTOCOL
+            && semver::Version::parse(&self.helper_version)
+                .is_ok_and(|v| v >= semver::Version::new(0, 1, 23) && v.pre.is_empty())
     }
     pub fn stopped(&self) -> bool {
         self.compatible()
@@ -153,6 +157,12 @@ pub fn require_current() -> Result<Status, String> {
 /// daemon is starting or restarting.
 #[cfg(target_os = "macos")]
 pub fn binding_mismatch() -> bool {
+    if std::path::Path::new(crate::component_update::SLOT).exists() {
+        return crate::component_update::macos::public_binding()
+            .and_then(|b| self_hash().map(|h| b.accepts(&h, unsafe { libc::getuid() })))
+            .is_ok_and(|accepted| !accepted)
+            || crate::component_update::macos::public_binding().is_err();
+    }
     let base = std::path::Path::new("/Library/PrivilegedHelperTools/foxVPN");
     let hash = std::fs::read_to_string(base.join("client.cdhash")).ok();
     let owner = std::fs::read_to_string(base.join("client.uid"))
@@ -171,8 +181,11 @@ pub fn binding_mismatch() -> bool {
 }
 pub fn installed() -> bool {
     cfg!(target_os = "macos")
-        && std::path::Path::new("/Library/PrivilegedHelperTools/ru.smartvpn.router.network")
+        && (std::path::Path::new("/Library/PrivilegedHelperTools/ru.smartvpn.router.network")
             .exists()
+            || std::path::Path::new(crate::component_update::SLOT)
+                .join("helper")
+                .exists())
 }
 pub fn valid_owner(uid: u32) -> bool {
     uid >= 501 && uid != CORE_UID && uid != u32::MAX && uid != 65534
@@ -217,7 +230,39 @@ pub fn self_hash() -> Result<String, String> {
 }
 #[cfg(target_os = "macos")]
 pub fn request(request: &Request) -> Result<Response, String> {
-    request_with(request, std::time::Duration::from_secs(40))
+    request_with(
+        request,
+        std::time::Duration::from_secs(if matches!(request, Request::InstallUpdate(_)) {
+            180
+        } else {
+            40
+        }),
+    )
+}
+#[cfg(target_os = "macos")]
+pub fn install_update(
+    request: crate::component_update::InstallRequest,
+    expected_hash: &str,
+) -> Result<(), String> {
+    let version = request.version.clone();
+    let response = self::request(&Request::InstallUpdate(request))?;
+    if !response.status.compatible() {
+        return Err(crate::text("helper_upgrade").into());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(response) = request_with(&Request::Status, std::time::Duration::from_secs(2)) {
+            let matches = crate::component_update::macos::public_binding()
+                .is_ok_and(|b| b.version == version && b.current == expected_hash);
+            if matches && response.status.helper_version == version && response.status.stopped() {
+                return Ok(());
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Не удалось подтвердить запуск нового компонента. Прежнее приложение сохранено; повторите проверку подключения.".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 #[cfg(target_os = "macos")]
 fn request_with(request: &Request, read_timeout: std::time::Duration) -> Result<Response, String> {
@@ -226,15 +271,22 @@ fn request_with(request: &Request, read_timeout: std::time::Duration) -> Result<
         os::unix::net::UnixStream,
     };
     if installed() {
-        let base = std::path::Path::new("/Library/PrivilegedHelperTools/foxVPN");
-        let hash = std::fs::read_to_string(base.join("client.cdhash")).ok();
-        let owner = std::fs::read_to_string(base.join("client.uid"))
-            .ok()
-            .and_then(|v| v.parse().ok());
-        if let Some(key) = binding_error(hash.as_deref(), owner, &self_hash()?, unsafe {
-            libc::getuid()
-        }) {
-            return Err(crate::text(key).into());
+        if std::path::Path::new(crate::component_update::SLOT).exists() {
+            let b = crate::component_update::macos::public_binding()?;
+            if !b.accepts(&self_hash()?, unsafe { libc::getuid() }) {
+                return Err(crate::text("helper_upgrade").into());
+            }
+        } else {
+            let base = std::path::Path::new("/Library/PrivilegedHelperTools/foxVPN");
+            let hash = std::fs::read_to_string(base.join("client.cdhash")).ok();
+            let owner = std::fs::read_to_string(base.join("client.uid"))
+                .ok()
+                .and_then(|v| v.parse().ok());
+            if let Some(key) = binding_error(hash.as_deref(), owner, &self_hash()?, unsafe {
+                libc::getuid()
+            }) {
+                return Err(crate::text(key).into());
+            }
         }
     }
     let mut stream = UnixStream::connect(SOCKET).map_err(|_| {
@@ -280,21 +332,30 @@ pub fn request(_: &Request) -> Result<Response, String> {
 #[cfg(target_os = "macos")]
 pub fn create_installer(resources: &std::path::Path) -> Result<std::path::PathBuf, String> {
     use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+    let info: serde_json::Value = serde_json::from_slice(
+        &fs::read(resources.join("network/component-version.json"))
+            .map_err(|_| crate::text("helper_package"))?,
+    )
+    .map_err(|_| crate::text("helper_package"))?;
+    if info["protocol"] != PROTOCOL || info["version"] != env!("CARGO_PKG_VERSION") {
+        return Err(crate::text("helper_package").into());
+    }
     let dir = std::env::temp_dir().join(format!("foxvpn-installer-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).map_err(|_| crate::text("helper_package"))?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
         .map_err(|_| crate::text("helper_package"))?;
     let stage = dir.join("root");
     let tools = stage.join("Library/PrivilegedHelperTools");
-    let network = stage.join("Library/PrivilegedHelperTools/foxVPN");
+    let base = stage.join("Library/PrivilegedHelperTools/foxVPN");
+    let network = base.join("component");
     let daemons = stage.join("Library/LaunchDaemons");
     let scripts = dir.join("scripts");
-    for path in [&tools, &network, &daemons, &scripts] {
+    for path in [&tools, &base, &network, &daemons, &scripts] {
         fs::create_dir_all(path).map_err(|_| crate::text("helper_package"))?;
     }
     fs::copy(
         resources.join("network/foxvpn-helper"),
-        tools.join("ru.smartvpn.router.network"),
+        network.join("helper"),
     )
     .map_err(|_| crate::text("helper_package"))?;
     fs::copy(
@@ -307,14 +368,33 @@ pub fn create_installer(resources: &std::path::Path) -> Result<std::path::PathBu
         network.join("network-version.json"),
     )
     .map_err(|_| crate::text("helper_package"))?;
-    fs::write(network.join("client.cdhash"), self_hash()?)
-        .map_err(|_| crate::text("helper_package"))?;
     let uid = unsafe { libc::getuid() };
     if !valid_owner(uid) || unsafe { libc::geteuid() } != uid {
         return Err(crate::text("helper_owner").into());
     }
-    fs::write(network.join("client.uid"), uid.to_string())
-        .map_err(|_| crate::text("helper_package"))?;
+    let binding = crate::component_update::Binding {
+        protocol: PROTOCOL,
+        version: env!("CARGO_PKG_VERSION").into(),
+        owner: uid,
+        current: self_hash()?,
+        previous: None,
+        archive_sha256: String::new(),
+    };
+    binding.validate()?;
+    fs::write(
+        network.join("binding.json"),
+        serde_json::to_vec(&binding).map_err(|_| crate::text("helper_package"))?,
+    )
+    .map_err(|_| crate::text("helper_package"))?;
+    fs::write(
+        base.join("floor.json"),
+        serde_json::to_vec(&crate::component_update::Floor {
+            version: env!("CARGO_PKG_VERSION").into(),
+            sha256: String::new(),
+        })
+        .map_err(|_| crate::text("helper_package"))?,
+    )
+    .map_err(|_| crate::text("helper_package"))?;
     fs::write(
         daemons.join("ru.smartvpn.router.network.plist"),
         include_str!("../macos/network.plist"),
@@ -336,7 +416,7 @@ pub fn create_installer(resources: &std::path::Path) -> Result<std::path::PathBu
     )
     .map_err(|_| crate::text("helper_package"))?;
     for path in [
-        tools.join("ru.smartvpn.router.network"),
+        network.join("helper"),
         network.join("core"),
         scripts.join("postinstall"),
     ] {

@@ -12,6 +12,16 @@ afterEach(cleanup);
 function mount(blocked=false){return render(<Updates ready showSettings blocked={blocked} onRefresh={refresh}/>)}
 const installs=()=>ipc.invoke.mock.calls.filter(([c])=>c==='install_app_update');
 describe('update consent and startup',()=>{
+ it('component replacement keeps the dialog locked and never opens a second installer',async()=>{
+  ipc.invoke.mockImplementation(async(c:string)=>{if(c==='update_state')return info;if(c==='check_app_update')return offer;if(c==='install_app_update')return new Promise(()=>{});throw Error(c)});
+  mount();await screen.findByRole('dialog');fireEvent.click(screen.getByRole('button',{name:'Обновить',exact:true}));
+  const progress=ipc.listen.mock.calls.find(([name])=>name==='app-update-progress')?.[1] as unknown as ((event:unknown)=>void);
+  expect(progress).toBeTruthy();act(()=>progress({payload:{stage:'component',downloaded:0,total:null}}));
+  expect(screen.getByRole('heading',{name:'Обновляем сетевой компонент'})).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Закрыть обновление'}).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button',{name:'Отменить скачивание'}).hasAttribute('disabled')).toBe(true);
+  expect(ipc.invoke.mock.calls.some(([c])=>c==='install_network_helper')).toBe(false);
+ });
  it('Windows overview exposes manual update checking with platform-specific text',async()=>{
   info.platform='windows';info.auto_check=false;offer=null;
   render(<Updates ready showSettings={false} showOverview blocked={false} onRefresh={refresh}/>);
