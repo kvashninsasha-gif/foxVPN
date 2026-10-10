@@ -1,11 +1,11 @@
 {
-  "version": "0.1.23",
-  "notes": "foxVPN 0.1.23 — совместное обновление Mac-приложения и компонента\n\nНа Mac встроенное обновление проверяет и обновляет приложение вместе с сетевым компонентом, без отдельного установщика и пароля администратора при последующих обычных обновлениях. Для перехода с 0.1.22 и ниже нужно один раз подтвердить установку нового компонента в macOS. Компонент самостоятельно проверяет исходную цифровую подпись и версию архива, блокирует откат и сохраняет прежнюю копию для восстановления при отказе запуска.\n\nПредварительный релиз. Запрос доступа к Keychain при изменении ad-hoc подписи остаётся отдельным ограничением. Developer ID/нотарификации и Windows Authenticode нет. Windows x64 остаётся локальным прокси; новый root-механизм относится только к Mac Apple Silicon. Полная аппаратная приёмка и системные leak/sleep/network-switch проверки остаются отдельными этапами.",
-  "pub_date": "2026-10-10T14:08:50.976481Z",
+  "version": "0.1.24",
+  "notes": "foxVPN 0.1.24 — проверка совместного обновления после перехода на новый компонент\n\nОбновление после 0.1.23 выполняет согласованный переход приложения и сетевого компонента, проверяя исходную подпись, версии, архитектуру и новую привязку. Для 0.1.22 и ниже потребуется однократная установка нового компонента. Добавлена проверка реального подписанного архива на полном пути подготовки component slot без изменения установленного сервиса.\n\nПредварительный релиз: Mac Apple Silicon и Windows x64 (локальный прокси). Developer ID/нотарификации, Windows Authenticode и полная системная приёмка не выполнены. Запрос Keychain из-за ad-hoc подписи остаётся отдельным ограничением; защита хранилища не ослабляется.",
+  "pub_date": "2026-10-10T14:58:34.310698Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.23/foxVPN_0.1.23_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbXhydUdHRzlMNE5PaWZxWG9HV21kdE10S3A0clNJUzhndEc2VmVBdG1hOGNwVFdTYnNnVXRQMjhaODFnZFdPbjdIUkppcXhCTnN5OGplQ0FGNzNaWXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjQxMzMwCWZpbGU6Zm94VlBOXzAuMS4yM194NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xLjIzClJtZmNBUlFKTG1DMlpRbFdTa3NESFBSV0N2djk1WHA0VmhVeU5BUDJCaFMzWkMwTlhseVdDMklYU05kTlpoU0tubGQwQWFzenQ1cG9HWWJYeWxLWkRnPT0K"
+      "url": "https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.24/foxVPN_0.1.24_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbXdHdFFUT2s4TTg3UU9tbFo4TGNySFF2dkdvT2k0dVhoOWJMZ0VrRnF2SnFUS09VanliOGZOTi9NazRKMDc4MFY0aldCZndBcjdjK0xEelc1ZnJwNndFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjQ0MzE0CWZpbGU6Zm94VlBOXzAuMS4yNF94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xLjI0CnJ1YjEvTHg5QmF5MEpRNG90QnYvZFgwblVXMDNBbEhRZG1hUTJLV0NtRU9rRXRYckxOeFVpTkNmSUk4YlVvUDFmb1lGd2RHZTlhdzJlR3RacFpYdUJBPT0K"
     }
   }
 }
