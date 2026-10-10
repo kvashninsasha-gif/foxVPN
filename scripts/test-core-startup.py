@@ -101,8 +101,8 @@ def main():
     cores = [p.resolve(strict=True) for p in args.core]
     fixtures = json.loads(subprocess.check_output([str(generator)], timeout=15))
     root = Path(__file__).resolve().parent.parent
-    version = json.loads((root / 'apps/desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))['version']
-    if fixtures.get('engine_version') != version:
+    release_version = json.loads((root / 'apps/desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))['version']
+    if fixtures.get('engine_version') != release_version:
         raise RuntimeError('Fixture generator version differs from the release; rebuild it')
     cases = fixtures['cases']
     if len(cases) != 72 or len({c['name'] for c in cases}) != 72:
@@ -111,7 +111,7 @@ def main():
     results = []
     for core in cores:
         digest = hashlib.sha256(core.read_bytes()).hexdigest()
-        version = subprocess.check_output([str(core), 'version'], timeout=15).decode('utf-8', 'replace').splitlines()[0]
+        core_version = subprocess.check_output([str(core), 'version'], timeout=15).decode('utf-8', 'replace').splitlines()[0]
         with tempfile.TemporaryDirectory(prefix='foxvpn-startup-') as directory:
             work = Path(directory)
             check_and_start(core, legacy, work, legacy=True)
@@ -122,11 +122,11 @@ def main():
                     raise RuntimeError(f'{core.name}: {case["name"]}: {error}') from error
         if hashlib.sha256(core.read_bytes()).hexdigest() != digest:
             raise RuntimeError('Core changed during verification')
-        results.append({'sha256': digest, 'version': version, 'name': core.name,
+        results.append({'sha256': digest, 'version': core_version, 'name': core.name,
                         'cases': [case['name'] for case in cases], 'legacy_rejected': True})
         print(f'{core.name}: 72 startup cases passed; legacy runtime failure reproduced', flush=True)
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps({'engine_version': version, 'cores': results}, indent=2) + '\n', encoding='utf-8')
+    args.report.write_text(json.dumps({'engine_version': release_version, 'cores': results}, indent=2) + '\n', encoding='utf-8')
 
 
 if __name__ == '__main__':
