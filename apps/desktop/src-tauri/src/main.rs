@@ -3,6 +3,8 @@ mod diagnostics;
 mod file_actions;
 mod local_recovery;
 mod metrics;
+#[cfg(any(target_os = "macos", test))]
+mod network_cli;
 mod setup_check;
 #[cfg(target_os = "macos")]
 mod update_install;
@@ -203,12 +205,19 @@ async fn runtime(
             ) {
                 Ok(response) => {
                     active_server_id = response.status.active_server_id.clone();
-                    connection_error = response.status.error.clone();
+                    connection_error = diagnostics::connection_error(
+                        response.status.connection_state(),
+                        response.status.error.clone(),
+                        connection_error,
+                    );
                     if !response.status.compatible() {
                         connection_error = Some(smart_vpn_engine::text("helper_upgrade").into());
                     }
                     *s.status.lock().unwrap() = response.status.connection_state().into();
                     if response.status.running && response.status.compatible() {
+                        *s.proxy_error
+                            .lock()
+                            .map_err(|_| "Не удалось обновить состояние подключения")? = None;
                         if let Some(core) = core.as_mut() {
                             core.proxy_port = response.status.proxy_port;
                             core.api_port = response.status.api_port;
@@ -460,6 +469,9 @@ fn disconnect_for_ticket(s: &State, ticket: u64) -> Result<(), String> {
     if result.is_ok() {
         *s.core.lock().unwrap() = None;
         *s.status.lock().unwrap() = "disconnected".into();
+        *s.proxy_error
+            .lock()
+            .map_err(|_| "Не удалось очистить состояние подключения")? = None;
     } else {
         *s.status.lock().unwrap() = "unknown".into();
     }
@@ -474,6 +486,12 @@ fn connect_for_ticket(s: &State, ticket: u64, manual: bool) -> Result<u16, Strin
     let result = connect_locked(s, ticket);
     if manual {
         if result.is_err() {
+            if s.wanted.current(ticket) {
+                *s.proxy_error
+                    .lock()
+                    .map_err(|_| "Не удалось сохранить ошибку подключения")? =
+                    result.as_ref().err().cloned();
+            }
             s.wanted.fail_current(ticket);
         } else {
             s.wanted.finish_current(ticket);
@@ -488,6 +506,9 @@ fn connect_locked(s: &State, ticket: u64) -> Result<u16, String> {
     if !s.wanted.current(ticket) || !s.wanted.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(smart_vpn_engine::text("connection_cancelled").into());
     }
+    *s.proxy_error
+        .lock()
+        .map_err(|_| "Не удалось подготовить подключение")? = None;
     {
         let mut core = s.core.lock().unwrap();
         if let Some(c) = core.as_mut() {
@@ -787,6 +808,24 @@ fn add_subscription(name: String, url: String, s: tauri::State<State>) -> Result
         Ok(())
     })
 }
+#[tauri::command]
+fn edit_subscription(
+    id: String,
+    name: String,
+    url: String,
+    s: tauri::State<State>,
+) -> Result<(), String> {
+    edit(&s, |p| {
+        if s.core
+            .lock()
+            .map_err(|_| "Не удалось проверить подключение")?
+            .is_some()
+        {
+            return Err(smart_vpn_engine::text("disconnect_first").into());
+        }
+        smart_vpn_engine::subscriptions::edit(p, &id, &name, &url)
+    })
+}
 fn update_sub(s: &State, id: &str) -> Result<ImportReport, String> {
     let url = s
         .profile
@@ -804,6 +843,7 @@ fn update_sub(s: &State, id: &str) -> Result<ImportReport, String> {
         return Err(smart_vpn_engine::text("message_329").into());
     }
     edit(s, |p| {
+        smart_vpn_engine::subscriptions::source_is_current(p, id, &url)?;
         if s.core.lock().unwrap().is_some() {
             return Err(smart_vpn_engine::text("message_330").into());
         }
@@ -889,6 +929,19 @@ fn write_private(path: &std::path::Path, text: &str) -> Result<(), String> {
         .map_err(|_| smart_vpn_engine::text("message_337").into())
 }
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Some(result) = network_cli::run(&std::env::args().nth(1).unwrap_or_default()) {
+        match result {
+            Ok(report) => {
+                println!("{report}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--foxvpn-proxy-guardian") {
         std::process::exit(if windows_proxy_auto::guardian().is_ok() {
@@ -1212,6 +1265,7 @@ fn main() {
             auto_select,
             traffic,
             add_subscription,
+            edit_subscription,
             update_subscription,
             delete_subscription,
             file_actions::import_file,

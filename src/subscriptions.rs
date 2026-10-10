@@ -8,6 +8,54 @@ use std::{
     time::{Duration, Instant},
 };
 use url::{Host, Url};
+
+pub fn edit(
+    profile: &mut crate::settings::Profile,
+    id: &str,
+    name: &str,
+    url: &str,
+) -> Result<(), String> {
+    let name = name.trim();
+    let url = url.trim();
+    if name.is_empty() || name.chars().count() > 128 {
+        return Err("Название подписки должно содержать от 1 до 128 символов".into());
+    }
+    validate_url(url)?;
+    if profile
+        .subscriptions
+        .iter()
+        .any(|s| s.id != id && s.url == url)
+    {
+        return Err(crate::text("message_327").into());
+    }
+    let sub = profile
+        .subscriptions
+        .iter_mut()
+        .find(|s| s.id == id)
+        .ok_or(crate::text("message_328"))?;
+    if sub.url != url {
+        sub.updated_at = None;
+    }
+    sub.name = name.into();
+    sub.url = url.into();
+    Ok(())
+}
+
+pub fn source_is_current(
+    profile: &crate::settings::Profile,
+    id: &str,
+    url: &str,
+) -> Result<(), String> {
+    if profile
+        .subscriptions
+        .iter()
+        .any(|s| s.id == id && s.url == url)
+    {
+        Ok(())
+    } else {
+        Err("Подписка изменилась во время загрузки. Повторите обновление.".into())
+    }
+}
 /// Conservative public Internet policy. Special-purpose blocks are excluded,
 /// including mapped/transition IPv6, even when some subranges are global.
 pub fn public_address(ip: IpAddr) -> bool {

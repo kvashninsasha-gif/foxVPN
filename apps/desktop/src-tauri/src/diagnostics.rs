@@ -1,6 +1,42 @@
 use super::State;
 use serde::Serialize;
 
+pub fn connection_error(
+    state: &str,
+    helper: Option<String>,
+    previous: Option<String>,
+) -> Option<String> {
+    if state == "connected" {
+        None
+    } else {
+        helper.or(previous)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_start_is_visible_until_recovery_and_new_helper_errors_take_priority() {
+        assert_eq!(
+            connection_error("disconnected", None, Some("Start failed".into())),
+            Some("Start failed".into())
+        );
+        assert_eq!(
+            connection_error(
+                "reconnecting",
+                Some("DNS failed".into()),
+                Some("Start failed".into())
+            ),
+            Some("DNS failed".into())
+        );
+        assert_eq!(
+            connection_error("connected", None, Some("Start failed".into())),
+            None
+        );
+    }
+}
+
 #[derive(Serialize)]
 pub struct Diagnostics {
     version: &'static str,

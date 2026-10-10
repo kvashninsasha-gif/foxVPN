@@ -77,3 +77,31 @@ fn private_ipv6_transition_and_documentation_addresses_never_become_public() {
         assert!(public_address(ip.parse().unwrap()), "{ip}");
     }
 }
+
+#[test]
+fn editing_subscription_is_atomic_and_rejects_stale_sources() {
+    use smart_vpn_engine::{
+        settings::{Profile, Subscription},
+        subscriptions,
+    };
+    let mut profile = Profile::default();
+    profile.subscriptions.push(Subscription {
+        id: "test".into(),
+        name: "Old".into(),
+        url: "https://example.com/old".into(),
+        updated_at: Some(1),
+        server_count: 2,
+    });
+    let original = serde_json::to_string(&profile).unwrap();
+    assert!(subscriptions::edit(&mut profile, "test", "", "https://example.com/new").is_err());
+    assert!(subscriptions::edit(&mut profile, "test", "New", "https://127.0.0.1/new").is_err());
+    assert_eq!(serde_json::to_string(&profile).unwrap(), original);
+    subscriptions::edit(&mut profile, "test", " New ", "https://example.com/new").unwrap();
+    assert_eq!(profile.subscriptions[0].name, "New");
+    assert_eq!(profile.subscriptions[0].updated_at, None);
+    assert_eq!(profile.subscriptions[0].server_count, 2);
+    assert!(subscriptions::source_is_current(&profile, "test", "https://example.com/old").is_err());
+    assert!(subscriptions::source_is_current(&profile, "test", "https://example.com/new").is_ok());
+    profile.subscriptions.clear();
+    assert!(subscriptions::source_is_current(&profile, "test", "https://example.com/new").is_err());
+}

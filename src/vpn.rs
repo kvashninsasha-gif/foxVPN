@@ -121,7 +121,9 @@ pub fn config(
         }
     };
     let bootstrap = if settings.tun {
-        json!({"type":"https","tag":"bootstrap","server":ip,"tls":{"server_name":name},"detour":"direct"})
+        // The default DNS dialer is direct. Explicitly routing it through an
+        // empty direct outbound is rejected when sing-box starts the transport.
+        json!({"type":"https","tag":"bootstrap","server":ip,"tls":{"server_name":name}})
     } else {
         json!({"type":"local","tag":"bootstrap"})
     };
@@ -154,6 +156,24 @@ pub fn friendly_error(raw: &str) -> String {
         crate::text("message_272")
     }
     .into()
+}
+fn startup_error(stage: &str, raw: &str, server: &Server, token: &str) -> String {
+    let mut clean = raw.to_string();
+    for value in std::iter::once(server.uuid.as_str())
+        .chain(std::iter::once(server.address.as_str()))
+        .chain(std::iter::once(token))
+        .chain(
+            ["pbk", "sid", "sni", "host", "path", "serviceName"]
+                .iter()
+                .filter_map(|key| server.params.get(*key).map(String::as_str)),
+        )
+    {
+        if !value.is_empty() && value != "/" {
+            clean = clean.replace(value, "[скрыто]");
+        }
+    }
+    let detail = clean.chars().take(1000).collect::<String>();
+    format!("{stage}: {}. {detail}", friendly_error(raw))
 }
 pub struct CoreProcess {
     pub child: Child,
@@ -263,7 +283,12 @@ impl CoreProcess {
             })?;
         if !valid.status.success() {
             let _ = std::fs::remove_dir_all(&dir);
-            return Err(friendly_error(&String::from_utf8_lossy(&valid.stderr)));
+            return Err(startup_error(
+                "Проверка конфигурации ядра",
+                &String::from_utf8_lossy(&valid.stderr),
+                s,
+                &secret,
+            ));
         }
         drop(reservation);
         let mut command = Command::new(binary);
@@ -350,7 +375,12 @@ impl CoreProcess {
                 .map_err(|_| crate::text("message_283"))?
                 .is_some()
             {
-                return Err(friendly_error(&proc.logs.lock().unwrap().join("\n")));
+                return Err(startup_error(
+                    "Запуск ядра",
+                    &proc.logs.lock().unwrap().join("\n"),
+                    s,
+                    &proc.secret,
+                ));
             }
             if std::net::TcpStream::connect_timeout(
                 &format!("127.0.0.1:{port}").parse().unwrap(),
@@ -403,5 +433,28 @@ impl CoreProcess {
 impl Drop for CoreProcess {
     fn drop(&mut self) {
         self.stop()
+    }
+}
+
+#[cfg(test)]
+mod startup_error_tests {
+    use super::*;
+    #[test]
+    fn detailed_start_errors_hide_profile_credentials_and_endpoint() {
+        let server = Server::parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls&type=tcp&sni=private.example#test").unwrap();
+        let raw = format!(
+            "FATAL initialize DNS: {} example.com private.example token-value",
+            server.uuid
+        );
+        let error = startup_error("Запуск ядра", &raw, &server, "token-value");
+        for value in [
+            server.uuid.as_str(),
+            "example.com",
+            "private.example",
+            "token-value",
+        ] {
+            assert!(!error.contains(value));
+        }
+        assert!(error.contains("initialize DNS"));
     }
 }

@@ -26,3 +26,8 @@ it('does not claim a verified browser route when a script is saved',async()=>{
  await screen.findByText(/Сохранён адрес сценария/);
  expect(screen.getByText(/Расширения браузера/)).toBeTruthy();
 });
+it('active PAC or autodetection prevents a false ready badge',async()=>{
+ ipc.invoke.mockResolvedValue({supported:true,enabled:true,matches:true,script_configured:true,script_active:true,auto_detect:false});
+ render(<WindowsProxySetup connected port={2080}/>);await screen.findByText('Включены автоматические параметры Windows');
+ expect(screen.queryByText('Прокси Windows настроен')).toBeNull();expect(ipc.invoke.mock.calls.every(([name])=>name==='windows_proxy_status')).toBe(true);
+});

@@ -7,6 +7,27 @@ pub struct Status {
     pub enabled: bool,
     pub matches: bool,
     pub script_configured: bool,
+    pub script_active: bool,
+    pub auto_detect: bool,
+}
+
+impl Status {
+    pub fn from_configuration(config: &Configuration, port: u16) -> Self {
+        let enabled = config.flags & 2 != 0;
+        let script_active = config.flags & 4 != 0;
+        let auto_detect = config.flags & 8 != 0;
+        Self {
+            supported: true,
+            enabled,
+            matches: enabled
+                && matches_server(&config.server, port)
+                && !script_active
+                && !auto_detect,
+            script_configured: !config.auto_url.is_empty(),
+            script_active,
+            auto_detect,
+        }
+    }
 }
 
 pub fn matches_server(value: &str, port: u16) -> bool {
@@ -28,13 +49,10 @@ pub fn matches_server(value: &str, port: u16) -> bool {
 
 #[cfg(windows)]
 pub fn read(port: u16) -> Result<Status, String> {
-    read_from(
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-        port,
-    )
+    Ok(Status::from_configuration(&configuration()?, port))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn read_from(subkey: &str, port: u16) -> Result<Status, String> {
     use windows_sys::Win32::{
         Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS},
@@ -89,6 +107,8 @@ fn read_from(subkey: &str, port: u16) -> Result<Status, String> {
         enabled,
         matches: enabled && matches_server(&server, port),
         script_configured,
+        script_active: false,
+        auto_detect: false,
     })
 }
 
@@ -99,6 +119,8 @@ pub fn read(_: u16) -> Result<Status, String> {
         enabled: false,
         matches: false,
         script_configured: false,
+        script_active: false,
+        auto_detect: false,
     })
 }
 
@@ -370,4 +392,23 @@ pub fn set_configuration(config: &Configuration) -> Result<(), String> {
         return Err("Windows не подтвердила обновление параметров прокси".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod effective_tests {
+    use super::*;
+    #[test]
+    fn active_scripts_and_detection_make_manual_proxy_ambiguous() {
+        let mut config = Configuration {
+            flags: 3,
+            server: "127.0.0.1:2080".into(),
+            bypass: "".into(),
+            auto_url: "https://example.com/proxy.pac".into(),
+        };
+        assert!(Status::from_configuration(&config, 2080).matches); // stored PAC is inactive
+        for flags in [7, 11, 15, 1] {
+            config.flags = flags;
+            assert!(!Status::from_configuration(&config, 2080).matches);
+        }
+    }
 }

@@ -198,7 +198,9 @@ fn config_has_protected_dns_and_both_address_families() {
     let s = Server::parse(&reality()).unwrap();
     let c = vpn::config(&s, &Settings::default(), &[], 2080, 2081, "test-secret").unwrap();
     assert_eq!(c["dns"]["servers"][0]["type"], "https");
-    assert_eq!(c["dns"]["servers"][0]["detour"], "direct");
+    // Bootstrap uses the plain direct DNS dialer; an explicit empty direct
+    // outbound is rejected by sing-box when it starts, not during `check`.
+    assert!(c["dns"]["servers"][0].get("detour").is_none());
     assert_eq!(c["outbounds"][0]["server"], s.address);
     assert_eq!(c["dns"]["servers"][2]["detour"], "vpn");
     assert_eq!(c["dns"]["final"], "dns-vpn");

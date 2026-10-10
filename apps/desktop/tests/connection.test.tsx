@@ -8,6 +8,7 @@ vi.mock('@tauri-apps/plugin-autostart',()=>({isEnabled:ipc.enabled,enable:vi.fn(
 vi.mock('@tauri-apps/plugin-clipboard-manager',()=>({readText:vi.fn(),writeText:vi.fn()}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 import {App} from '../src/App';
+import ru from '../../../locales/ru.json';
 import type {Snapshot} from '../src/types';
 let snapshot:Snapshot;
 function fixture():Snapshot{return{status:'disconnected',proxy_port:null,core_version:'1.14.2',connection_plan:'needs_proxy_consent',logs:[],profile:{version:1,selected:'test',subscriptions:[],rules:[],servers:[{id:'test',name:'Тестовый сервер',address:'example.com',port:443,uuid:'public-test-fixture',transport:'tcp',security:'tls',params:{},favorite:false,group:'Основные',subscription:null,latency_ms:88,download_mbps:16.4,status:'available',successes:1,failures:0,last_error:null}],settings:{mode:'smart',tun:true,kill_switch:true,proxy_acknowledged:false,proxy_port:2080,dns_protection:true,dns_provider:'cloudflare',dns_transport:'https',auto_connect:false,start_minimized:false,restore:true,health_interval:30,failover:true,favorites_only:false,strategy:'balanced',subscription_interval:21600}}}}
@@ -117,4 +118,35 @@ describe('connection setup regression',()=>{
   document.dispatchEvent(new Event('visibilitychange'));
   await waitFor(()=>expect(screen.queryByText(failure)).toBeNull());
  });
+});
+it('background server refresh keeps local edits and saving preserves new untouched fields',async()=>{
+ let serverUpdate:((e:{payload:string})=>void)|undefined;
+ ipc.listen.mockImplementation(async(event:string,callback:any)=>{if(event==='servers-updated')serverUpdate=callback;return ()=>{}});
+ const original=ipc.invoke.getMockImplementation()!;
+ ipc.invoke.mockImplementation(async(c:string,args:any)=>{if(c==='save_settings'){snapshot.profile.settings=args.settings;return}return original(c,args)});
+ await ready();fireEvent.click(screen.getAllByRole('button',{name:'Настройки',exact:true})[0]);
+ const port=screen.getByRole('spinbutton',{name:'Порт локального прокси'});fireEvent.change(port,{target:{value:'2090'}});
+ snapshot.profile.settings.metric_interval=1200;serverUpdate?.({payload:''});
+ await waitFor(()=>expect((port as HTMLInputElement).value).toBe('2090'));
+ fireEvent.click(screen.getByRole('button',{name:'Сохранить',exact:true}));
+ await waitFor(()=>expect(snapshot.profile.settings.proxy_port).toBe(2090));expect(snapshot.profile.settings.metric_interval).toBe(1200);
+ await waitFor(()=>expect(screen.queryByRole('button',{name:'Отменить изменения настроек'})).toBeNull());
+});
+it('autostart lookup failure does not prevent metric listeners from updating the screen',async()=>{
+ ipc.enabled.mockRejectedValueOnce('Автозапуск запрещён');let update:((e:{payload:string})=>void)|undefined;
+ ipc.listen.mockImplementation(async(event:string,callback:any)=>{if(event==='metrics-updated')update=callback;return ()=>{}});
+ await ready();await waitFor(()=>expect(update).toBeDefined());snapshot.profile.servers[0].latency_ms=42;update?.({payload:''});await screen.findByText('42 мс');
+});
+it('editing a subscription sends its identity and preserves other records',async()=>{
+ snapshot.profile.subscriptions=[{id:'sub-test',name:'Список',url:'https://example.com/old',updated_at:1,server_count:2}];
+ const original=ipc.invoke.getMockImplementation()!;ipc.invoke.mockImplementation(async(c:string,args:any)=>{if(c==='edit_subscription'){snapshot.profile.subscriptions[0]={...snapshot.profile.subscriptions[0],name:args.name,url:args.url};return}return original(c,args)});
+ await ready();fireEvent.click(screen.getByRole('button',{name:'Подписки',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Редактировать подписку Список'}));
+ const dialog=screen.getByRole('dialog');const inputs=dialog.querySelectorAll('input');fireEvent.change(inputs[0],{target:{value:'Новый список'}});fireEvent.change(inputs[1],{target:{value:'https://example.com/new'}});
+ fireEvent.click(screen.getByRole('button',{name:'Сохранить',exact:true}));await screen.findByText('Новый список');
+ expect(ipc.invoke).toHaveBeenCalledWith('edit_subscription',{id:'sub-test',name:'Новый список',url:'https://example.com/new'});expect(snapshot.profile.subscriptions).toHaveLength(1);
+});
+it('a Windows profile imported from Mac never presents local proxy as whole-computer VPN',async()=>{
+ snapshot.platform='windows';snapshot.status='connected';snapshot.proxy_port=2080;snapshot.connection_plan='ready';snapshot.profile.settings.tun=true;
+ await ready();expect(screen.queryByText(ru.tun_scope)).toBeNull();await screen.findByText('127.0.0.1:2080');
+ expect(screen.getAllByText(ru.windows_proxy_scope).length).toBeGreaterThan(0);
 });
