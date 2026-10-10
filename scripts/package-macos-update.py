@@ -3,7 +3,7 @@
 Publish the immutable GitHub release assets first, then copy macos.json to
 updates/macos.json and commit the feed. Never rotate an existing signing key.
 """
-import argparse, hashlib, json, os, plistlib, subprocess, tarfile
+import argparse, hashlib, json, os, plistlib, subprocess, tarfile, sys
 from pathlib import Path
 from datetime import datetime, timezone
 parser=argparse.ArgumentParser(description=__doc__)
@@ -11,6 +11,7 @@ parser.add_argument('bundle', type=Path)
 parser.add_argument('--out-dir', type=Path, required=True)
 parser.add_argument('--key', type=Path, default=Path.home()/'.config/foxvpn-release/updater.key')
 parser.add_argument('--notes-file', type=Path)
+parser.add_argument('--startup-generator', type=Path, required=True)
 args=parser.parse_args()
 root=Path(__file__).resolve().parent.parent
 config=json.loads((root/'apps/desktop/src-tauri/tauri.macos.conf.json').read_text())
@@ -27,6 +28,11 @@ for file in app.rglob('*'):
  if file.is_symlink():raise SystemExit('Symlinks are not supported in update bundles')
  if file.suffix.lower() in {'.p12','.pfx','.mobileprovision','.enc'}:raise SystemExit('Private material must not enter release')
 out.mkdir(parents=True,exist_ok=True)
+subprocess.run([sys.executable,str(root/'scripts/test-core-startup.py'),
+ '--generator',str(args.startup_generator.resolve()),
+ '--core',str(app/'Contents/Resources/core/sing-box'),
+ '--core',str(app/'Contents/Resources/network/foxvpn-network-core'),
+ '--report',str(out/'macos-core-startup.json')],check=True)
 name=f'foxVPN-{version}-macOS-arm64.app.tar.gz';archive=out/name
 if archive.exists():raise SystemExit('An updater archive already exists; never overwrite published release assets')
 with tarfile.open(archive,'w:gz') as tar:tar.add(app,arcname='foxVPN.app')

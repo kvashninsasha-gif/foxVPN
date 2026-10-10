@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sign an immutable Windows NSIS installer locally; never upload the private key."""
-import argparse, json, subprocess
+import argparse, hashlib, json, subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 p=argparse.ArgumentParser(description=__doc__)
@@ -13,6 +13,13 @@ version=json.loads((root/'apps/desktop/src-tauri/tauri.conf.json').read_text())[
 installer=a.installer.resolve();out=a.out_dir.resolve()
 if installer.name!=f'foxVPN_{version}_x64-setup.exe' or not installer.read_bytes().startswith(b'MZ'):
  raise SystemExit('Expected the versioned Windows NSIS installer')
+proof_path=installer.parent/'windows-core-startup.json'
+if not proof_path.is_file():raise SystemExit('Installed-core startup proof from the Windows runner is required before signing')
+proof=json.loads(proof_path.read_text(encoding='utf-8-sig'))
+if proof.get('installer_sha256')!=hashlib.sha256(installer.read_bytes()).hexdigest() or proof.get('installer_version')!=version:
+ raise SystemExit('Startup proof does not match this exact installer/version')
+if len(proof.get('cores',[]))!=1 or len(set(proof['cores'][0].get('cases',[])))!=72 or not proof['cores'][0].get('legacy_rejected'):
+ raise SystemExit('Incomplete installed-core startup proof')
 key=Path.home()/'.config/foxvpn-release/updater.key'
 if not key.is_file() or not Path(str(key)+'.pub').is_file() or Path(str(key)+'.pub').read_text().strip()!=config['plugins']['updater']['pubkey']:
  raise SystemExit('Restore the original signing key; never replace it')

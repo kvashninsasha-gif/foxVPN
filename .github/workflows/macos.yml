@@ -1,0 +1,41 @@
+name: macOS core startup regression
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos.yml'
+      - 'Cargo.*'
+      - 'src/**'
+      - 'tests/**'
+      - 'examples/**'
+      - 'locales/**'
+      - 'scripts/download-core.py'
+      - 'scripts/test-core-startup.py'
+permissions:
+  contents: read
+jobs:
+  startup:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download verified pinned core for runner architecture
+        run: python3 scripts/download-core.py
+      - name: Engine tests with real core
+        run: cargo test --locked -p smart-vpn-engine
+        env:
+          SMARTVPN_TEST_CORE: ${{ github.workspace }}/core/sing-box
+      - name: Build production fixture generator
+        run: cargo build --locked --release --example startup-fixtures
+      - name: Actual runtime matrix without changing system networking
+        run: python3 scripts/test-core-startup.py --generator target/release/examples/startup-fixtures --core core/sing-box --report target/macos-core-startup.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foxVPN-macOS-core-startup
+          if-no-files-found: error
+          path: target/macos-core-startup.json

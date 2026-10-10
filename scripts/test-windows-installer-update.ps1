@@ -34,6 +34,18 @@ try {
         throw 'Installed application version mismatch'
     }
     if ((Get-FileHash $profile -Algorithm SHA256).Hash -ne $profileHash) { throw 'Profile changed by update' }
+    # Gate the exact core extracted by the real installer, not just the input
+    # downloaded before bundling. A missing core/generator is a hard failure.
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+    $generator = Join-Path $repoRoot 'target/release/examples/startup-fixtures.exe'
+    $core = Join-Path $installRoot 'core/sing-box.exe'
+    $report = Join-Path (Split-Path (Resolve-Path $Installer).Path -Parent) 'windows-core-startup.json'
+    python (Join-Path $PSScriptRoot 'test-core-startup.py') --generator $generator --core $core --report $report
+    if ($LASTEXITCODE -ne 0) { throw 'Installed core startup gate failed' }
+    $proof = Get-Content $report -Raw | ConvertFrom-Json
+    $proof | Add-Member -NotePropertyName installer_sha256 -NotePropertyValue (Get-FileHash $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    $proof | Add-Member -NotePropertyName installer_version -NotePropertyValue $ExpectedVersion
+    $proof | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 $report
     Write-Output 'NSIS update mode and profile preservation verified'
 } finally {
     $uninstaller = Join-Path $installRoot 'uninstall.exe'

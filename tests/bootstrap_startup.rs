@@ -6,6 +6,25 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+#[path = "support/startup_cases.rs"]
+mod startup_cases;
+#[test]
+fn all_public_startup_cases_keep_vpn_dns_and_reject_legacy_detours() {
+    let cases = startup_cases::cases();
+    assert_eq!(cases.len(), 72);
+    for case in cases {
+        let cfg = &case["config"];
+        assert!(vpn::validate_dns_detours(cfg).is_ok(), "{}", case["name"]);
+        assert_eq!(cfg["inbounds"].as_array().unwrap().len(), 1);
+        assert_eq!(cfg["inbounds"][0]["type"], "mixed");
+        if cfg["dns"]["servers"][2]["type"] != "local" {
+            assert_eq!(cfg["dns"]["servers"][2]["detour"], "vpn");
+        }
+        let mut bad = cfg.clone();
+        bad["dns"]["servers"][0]["detour"] = serde_json::json!("direct");
+        assert!(vpn::validate_dns_detours(&bad).is_err());
+    }
+}
 struct Running {
     child: Child,
     directory: PathBuf,
@@ -51,6 +70,7 @@ fn start(binary: &str, legacy: bool) -> (Running, u16) {
 #[test]
 fn tun_bootstrap_starts_and_legacy_empty_direct_detour_is_rejected() {
     let Ok(binary) = std::env::var("SMARTVPN_TEST_CORE") else {
+        eprintln!("Real-core regression not run: SMARTVPN_TEST_CORE absent. Artifact startup gate is mandatory before release.");
         return;
     };
     let (mut bad, _) = start(&binary, true);

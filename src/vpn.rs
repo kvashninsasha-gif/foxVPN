@@ -132,13 +132,33 @@ pub fn config(
     if settings.tun {
         inbounds.push(json!({"type":"tun","tag":"tun-in","address":["172.29.0.1/30","fdfe:dcba:9876::1/126"],"auto_route":true,"strict_route":true,"stack":"mixed"}));
     }
-    Ok(
-        json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}}),
-    )
+    let cfg = json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}});
+    validate_dns_detours(&cfg)?;
+    Ok(cfg)
+}
+/// foxVPN uses the implicit direct DNS dialer. Explicit detours are reserved
+/// for the VPN outbound, never the default direct outbound (runtime-only error
+/// in sing-box). Fail closed instead of weakening protected DNS as a fallback.
+pub fn validate_dns_detours(cfg: &Value) -> Result<(), String> {
+    if let Some(servers) = cfg["dns"]["servers"].as_array() {
+        for server in servers {
+            if let Some(detour) = server["detour"].as_str().filter(|v| !v.is_empty()) {
+                let outbound = cfg["outbounds"].as_array().and_then(|outbounds| {
+                    outbounds.iter().find(|o| o["tag"].as_str() == Some(detour))
+                });
+                if outbound.is_none_or(|o| o["type"] == "direct") {
+                    return Err(crate::text("dns_startup_config_invalid").into());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 pub fn friendly_error(raw: &str) -> String {
     let r = raw.to_lowercase();
-    if r.contains("permission") || r.contains("operation not permitted") {
+    if r.contains("empty direct outbound") || r.contains("outbound detour not found") {
+        crate::text("dns_startup_config_invalid")
+    } else if r.contains("permission") || r.contains("operation not permitted") {
         crate::text("message_265")
     } else if r.contains("refused") {
         crate::text("message_266")
@@ -439,6 +459,48 @@ impl Drop for CoreProcess {
 #[cfg(test)]
 mod startup_error_tests {
     use super::*;
+    #[test]
+    fn dns_configuration_failures_are_not_server_resolution_failures() {
+        for raw in [
+            "start dns/https[bootstrap]: detour to an empty direct outbound makes no sense",
+            "start dns/tls[dns-vpn]: outbound detour not found: vpn",
+        ] {
+            assert_eq!(
+                friendly_error(raw),
+                crate::text("dns_startup_config_invalid")
+            );
+            assert_ne!(friendly_error(raw), crate::text("message_270"));
+        }
+        assert_eq!(
+            friendly_error("resolve server: DNS lookup failed"),
+            crate::text("message_270")
+        );
+    }
+    #[test]
+    fn every_dns_transport_rejects_explicit_direct_and_missing_outbounds() {
+        let server = Server::parse(
+            "vless://11111111-1111-4111-8111-111111111111@127.0.0.1:9?security=none&type=tcp#test",
+        )
+        .unwrap();
+        let cfg = config(
+            &server,
+            &Settings::default(),
+            &[],
+            12345,
+            12346,
+            "public-token",
+        )
+        .unwrap();
+        assert_eq!(cfg["dns"]["servers"][2]["detour"], "vpn");
+        for index in 0..3 {
+            for detour in ["direct", "missing"] {
+                let mut bad = cfg.clone();
+                bad["dns"]["servers"][index]["detour"] = json!(detour);
+                assert!(validate_dns_detours(&bad).is_err());
+            }
+        }
+        assert!(validate_dns_detours(&cfg).is_ok());
+    }
     #[test]
     fn detailed_start_errors_hide_profile_credentials_and_endpoint() {
         let server = Server::parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls&type=tcp&sni=private.example#test").unwrap();

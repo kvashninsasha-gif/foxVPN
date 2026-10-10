@@ -8,11 +8,13 @@ on:
       - 'Cargo.*'
       - 'src/**'
       - 'tests/**'
+      - 'examples/**'
       - 'locales/**'
       - 'apps/desktop/**'
       - 'scripts/download-core.py'
       - 'scripts/test-windows-proxy-guardian.py'
       - 'scripts/test-windows-installer-update.ps1'
+      - 'scripts/test-core-startup.py'
 permissions:
   contents: read
 jobs:
@@ -38,6 +40,8 @@ jobs:
         run: cargo test --locked -p smart-vpn-desktop windows_real_proxy_restore_and_parent_death -- --ignored --test-threads=1
         env:
           FOXVPN_TEST_ALLOW_SYSTEM_PROXY: "1"
+      - name: Build public startup fixture generator
+        run: cargo build --locked --release --example startup-fixtures
       - name: Frontend dependencies
         run: npm ci
         working-directory: apps/desktop
@@ -72,3 +76,4 @@ jobs:
           path: |
             target/release/bundle/nsis/*.exe
             target/release/bundle/nsis/SHA256SUMS.txt
+            target/release/bundle/nsis/windows-core-startup.json
