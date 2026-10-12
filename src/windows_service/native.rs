@@ -601,49 +601,63 @@ mod tests {
             std::env::var("FOXVPN_TEST_ALLOW_SERVICE").as_deref(),
             Ok("1")
         );
-        // This Rust test process shares the installed owner's SID but its image
-        // is not the pinned desktop client, so it must receive no Status.
-        assert!(request(&Request::Status).is_err());
-        for length in [(MAX_FRAME + 1) as u32, 1024] {
-            let pipe = handle(unsafe {
-                CreateFileW(
-                    wide(PIPE).as_ptr(),
-                    FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE,
-                    0,
-                    std::ptr::null(),
-                    OPEN_EXISTING,
-                    SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
-                    std::ptr::null_mut(),
-                )
-            })
-            .expect("Owner must be able to open the pipe before process authentication");
-            let started = Instant::now();
-            let deadline = started + Duration::from_secs(5);
-            client_transfer(
-                pipe.as_raw_handle(),
-                &mut length.to_le_bytes(),
-                true,
-                deadline,
-            )
-            .unwrap();
-            let mut response = [0u8; 1];
-            assert!(client_transfer(pipe.as_raw_handle(), &mut response, false, deadline).is_err());
-            assert!(started.elapsed() < Duration::from_secs(5));
-            // Allow server to rearm its one instance after disconnect.
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let hostile = unsafe {
-            CreateNamedPipeW(
-                wide(PIPE).as_ptr(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_NOWAIT,
-                2,
-                1024,
-                1024,
-                1000,
-                std::ptr::null(),
-            )
-        };
-        assert_eq!(hostile, INVALID_HANDLE_VALUE);
+        verify_untrusted_pipe_boundary();
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn verify_untrusted_pipe_boundary() {
+    assert_eq!(
+        std::env::var("FOXVPN_TEST_ALLOW_SERVICE").as_deref(),
+        Ok("1")
+    );
+    assert_eq!(std::env::var("CI").as_deref(), Ok("true"));
+    // This Rust test process shares the installed owner's SID but its image
+    // is not the pinned desktop client, so it must receive no Status.
+    assert!(request(&Request::Status).is_err());
+    for length in [(MAX_FRAME + 1) as u32, 1024] {
+        let pipe = handle(unsafe {
+            CreateFileW(
+                wide(PIPE).as_ptr(),
+                FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
+                std::ptr::null_mut(),
+            )
+        })
+        .expect("Owner must be able to open the pipe before process authentication");
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(5);
+        client_transfer(
+            pipe.as_raw_handle(),
+            &mut length.to_le_bytes(),
+            true,
+            deadline,
+        )
+        .unwrap();
+        let mut response = [0u8; 1];
+        assert!(client_transfer(pipe.as_raw_handle(), &mut response, false, deadline).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Allow server to rearm its one instance after disconnect.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let hostile = unsafe {
+        CreateNamedPipeW(
+            wide(PIPE).as_ptr(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_NOWAIT,
+            2,
+            1024,
+            1024,
+            1000,
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(hostile, INVALID_HANDLE_VALUE);
+}
+#[cfg(feature = "test-support")]
+pub fn public_fixture_boundary_probe() {
+    verify_untrusted_pipe_boundary();
 }

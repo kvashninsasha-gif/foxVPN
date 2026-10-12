@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --locked -p smart-vpn-engine --bin foxvpn-windows-service --example windows-service-probe
+      - run: cargo build --locked --features test-support -p smart-vpn-engine --bin foxvpn-windows-service --example windows-service-probe
       - name: Disposable service authentication and lifecycle fixture
         shell: pwsh
         run: ./scripts/windows/test-network-service.ps1 -ServiceBinary target/debug/foxvpn-windows-service.exe -ProbeBinary target/debug/examples/windows-service-probe.exe
