@@ -258,9 +258,10 @@ fn authenticate(pipe: HANDLE, binding: &Binding) -> Result<OwnedHandle, String> 
     Ok(process) // retained to prevent PID reuse during dispatch
 }
 fn pipe(binding: &Binding) -> Result<OwnedHandle, String> {
-    // Owner gets only file read/write data. Do not grant create-pipe-instance.
+    // Owner gets generic read + write data, including read-only metadata needed
+    // by CreateFile. Do not grant generic write/create-pipe-instance.
     let acl = wide(format!(
-        "D:P(A;;GA;;;SY)(A;;0x00100003;;;{})",
+        "D:P(A;;GA;;;SY)(A;;0x0012008b;;;{})",
         binding.owner_sid
     ));
     let mut descriptor = std::ptr::null_mut();
@@ -503,7 +504,7 @@ fn scm_server(pid: u32) -> Result<(), String> {
         let start = bytes.as_ptr() as usize;
         let end = start + bytes.len() * std::mem::size_of::<usize>();
         let address = ptr as usize;
-        if address < start || address >= end || address % 2 != 0 {
+        if address < start || address >= end || !address.is_multiple_of(2) {
             return Err(fail());
         }
         let data = unsafe { std::slice::from_raw_parts(ptr, (end - address) / 2) };
@@ -542,10 +543,13 @@ pub fn request(request: &Request) -> Result<Status, String> {
         }
         (binding, lock)
     };
+    if process_sid(unsafe { GetCurrentProcess() })? != binding.owner_sid {
+        return Err("Caller does not match configured service owner".into());
+    }
     let pipe = handle(unsafe {
         CreateFileW(
             wide(PIPE).as_ptr(),
-            FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE,
+            FILE_GENERIC_READ | FILE_WRITE_DATA,
             0,
             std::ptr::null(),
             OPEN_EXISTING,
@@ -680,20 +684,6 @@ fn client_transfer(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    #[ignore = "Requires explicitly provisioned disposable Windows service fixture"]
-    fn same_owner_untrusted_process_and_pipe_instance_are_denied() {
-        assert_eq!(
-            std::env::var("FOXVPN_TEST_ALLOW_SERVICE").as_deref(),
-            Ok("1")
-        );
-        verify_untrusted_pipe_boundary();
-    }
-}
-
 #[cfg(any(test, feature = "test-support"))]
 fn verify_untrusted_pipe_boundary() {
     assert_eq!(
@@ -708,7 +698,7 @@ fn verify_untrusted_pipe_boundary() {
         let pipe = handle(unsafe {
             CreateFileW(
                 wide(PIPE).as_ptr(),
-                FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE,
+                FILE_GENERIC_READ | FILE_WRITE_DATA,
                 0,
                 std::ptr::null(),
                 OPEN_EXISTING,
@@ -749,4 +739,18 @@ fn verify_untrusted_pipe_boundary() {
 #[cfg(feature = "test-support")]
 pub fn public_fixture_boundary_probe() {
     verify_untrusted_pipe_boundary();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "Requires explicitly provisioned disposable Windows service fixture"]
+    fn same_owner_untrusted_process_and_pipe_instance_are_denied() {
+        assert_eq!(
+            std::env::var("FOXVPN_TEST_ALLOW_SERVICE").as_deref(),
+            Ok("1")
+        );
+        verify_untrusted_pipe_boundary();
+    }
 }
