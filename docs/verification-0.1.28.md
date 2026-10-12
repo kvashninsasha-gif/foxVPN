@@ -1,6 +1,6 @@
 # foxVPN 0.1.28 — восстановление и аудит
 
-Дата: 12.10.2026. Состояние до публикации: локальные проверки пройдены, native CI/конечные артефакты ещё проверяются. Физическая Mac/Windows матрица не подменяется тестами.
+Дата: 12.10.2026. Локальные и native CI проверки пройдены; конечные Mac/Windows артефакты проверены и подписаны исходным ключом. Публикация проверяется отдельно. Физическая Mac/Windows матрица не подменяется тестами.
 
 Зашифрованный журнал настройки фиксирует прежний профиль до изменяющих шагов. Отдельный AES-GCM context, private atomic/fsync, ограниченные regular-file/no-follow чтения, файловая lease и сверка disk revision защищают от потери поздних правок. Исчезнувший или чужой журнал прекращает настройку. После аварии нужен явный выбор пользователя; восстановление не подключает VPN автоматически и не завершает неизвестный процесс.
 
@@ -10,6 +10,8 @@ Windows: подписанные установщики сохраняются с
 
 VPN-ядро собрано из закреплённого sing-box 1.14.3, Go 1.26.9 и dependency overlay; теги сокращены до используемых функций. На Mac обе сборки прошли fresh binary advisory gate. OpenPGP wildcard предупреждение остаётся видимым и принимается только при доказанном отсутствии пакета в полном production graph. Новые/конкретные/непроверенные finding блокируют выпуск. Rust/npm gate имеет два видимых ограниченных Linux-only предупреждения и срок пересмотра; полный bundled C/C++ анализ не заявляется.
 
-Локальные доказательства: 179 обычных Rust-тестов плюс новая регрессия чужого/исчезнувшего журнала; 93 UI-теста; Clippy с запретом предупреждений; 18 Go policy, 10 dependency policy, 10 VPN matrix policy. Original-key Windows fixture tests и final artifact proof выполняются отдельно.
+Локальные доказательства: 180 обычных Rust-тестов; 93 UI-теста; Clippy с запретом предупреждений; 18 Go policy, 10 dependency policy, 10 VPN matrix policy. Два original-key Windows fixture теста и Mac signed archive/tamper/slot проверки пройдены. Конечный NSIS прошёл установку 0.1.19→0.1.28, 72 startup, 6 настоящих inference, guardian/forced exit и сохранение профиля.
 
 22-сценарная системная матрица и reciprocal public Mac↔Windows backup pipeline добавлены. Профили, URI, ключи пользователя и фактические системные данные в GitHub не публикуются. Точное состояние оставшегося плана: [subtasks.md](subtasks.md).
+
+Native CI: reciprocal public backup 38215040676 и 38216493522 — оба направления; ordinary-owner service boundary 38218201158 — разрешённый caller, чужой путь/процесс, bounded frames, pipe-instance, запрет process write/kill/debug, upgrade/restart/remove. Служба не устанавливается релизным NSIS. Rust/npm gate 38217477129 пройден на Mac/Windows; interface 38215040857 — 93 теста на каждой платформе. Mac engine/core startup gates 38215040715/38217477361 пройдены. Исходники GUI для конечных файлов не менялись после исходного 2eb40cc; поздние правки касались experimental service/проверок и сборки Windows core. Конечный Windows CI 38218201236: исходники 1137d166911a89b709b2a59bccc5c7d81c32b9d1; 148 обычных Rust + 2 signature cache + 1 native proxy тест, 93 UI, исходные подписанные fixtures и NSIS. SHA256 установщика 8bd15a478fd773379b9f524eac9ee876d43989d5c0974cd5a95c6e4824992c63; размер 15 744 775 байт; GUI 28ebeac3fdc3a82fa48acd961291f52b1294c003d656674713803ce541178a59; core f8b01f8be8eaeb2d6d9ac1e324f46d96904cd854a00a78451e3fa4e07215c043.

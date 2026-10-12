@@ -14,14 +14,14 @@
 | 3.1 | Автоматизированный протокол физической VPN-матрицы | — | Сценарии/ожидания IPv4/IPv6/DNS/UDP/QUIC/rules/failover/sleep/reboot | Готов протокол 22 сценариев + 10 policy tests; физические результаты не подставлялись |
 | 3.2 | Выполнить матрицу на Mac после установки конечной версии | 2,3.1 | Фактические результаты и восстановление сети | Требуется согласованное окно прерывания VPN |
 | 3.3 | Приёмка Windows на личном ПК | 2,3.1 | Installer/proxy/updater/browser/reboot | Отложено пользователем |
-| 4.1 | Схема Windows service/IPC/установки и модель прав | — | Owner/process authentication, ограниченные команды/пути, upgrade/remove | Частично: service/IPC/ACL/installer; native CI ожидается, Start отключён |
+| 4.1 | Схема Windows service/IPC/установки и модель прав | — | Owner/process authentication, ограниченные команды/пути, upgrade/remove | Service/IPC/ACL/installer готовы в своей области; ordinary-owner native CI 38218201158 пройден, Start отключён |
 | 4.2 | Реализация service и TUN/DNS/маршрутов | 4.1 | Подключение/stop без proxy, privilege boundaries, восстановление | Открыто: owned TUN/DNS/маршруты не реализованы; Wintun provenance закреплён |
 | 4.3 | WFP Kill Switch и матрица сбоев | 4.2 | IPv4/IPv6/UDP/DNS/boot/crash без утечек | Открыто: upstream dynamic WFP не заменяет persistent Kill Switch |
-| 4.4 | Native Windows service/TUN/WFP испытания и выпуск | 4.1–4.3 | Привилегированный disposable runner + устройство | IPC runner ожидается; TUN/WFP/device приёмка открыта |
-| 5.1 | Dependency-аудит в CI с оценкой платформ и vendor-core | — | Rust/npm и pinned native components; не скрывать все advisory | Rust/npm + Go gates реализованы; исключения точные/датированные/видимые; native CI ожидается, C/C++ отдельно |
+| 4.4 | Native Windows service/TUN/WFP испытания и выпуск | 4.1–4.3 | Привилегированный disposable runner + устройство | IPC/upgrade/restart/remove runner пройден; TUN/WFP/device приёмка открыта |
+| 5.1 | Dependency-аудит в CI с оценкой платформ и vendor-core | — | Rust/npm и pinned native components; не скрывать все advisory | Rust/npm + Go gates пройдены Mac/Windows; исключения точные/датированные/видимые; C/C++ отдельно |
 | 5.2 | Подпись Developer ID/нотарификация и Authenticode | — | Проверенные сертификаты/конечные файлы | Доступных Developer ID/Apple signing identities не обнаружено; Authenticode не предоставлен |
 | 6.1 | Intel Mac build и проверка без обещания приёмки | — | x86_64 app/helper/core и подпись/update channel | Запланировано |
-| 6.2 | Реальный перенос публичного backup Mac↔Windows | — | Сохранность серверов/rules/subscriptions/settings | 3 Rust + signed-independent fixture checks пройдены; reciprocal native CI ожидается |
+| 6.2 | Реальный перенос публичного backup Mac↔Windows | — | Сохранность серверов/rules/subscriptions/settings | Пройден reciprocal native public JSON/Vault перенос Mac↔Windows; OS keyring/GUI физически отдельно |
 | 6.3 | iPhone signing/provisioning и физическая матрица | — | Network Extension/App Groups/Keychain и устройство | Внешняя подпись/устройство, не подтверждены |
 | 7.1 | Мгновенная скорость/история/качество измерений | — | Проверки счётчиков/перезапуска/ограничения хранения | Запланировано |
 | 7.2 | Upload/loss и UI ограничений трафика | — | Реальный endpoint, точный объём, timeout/cancel | Запланировано |
