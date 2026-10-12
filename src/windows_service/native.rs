@@ -257,6 +257,51 @@ fn authenticate(pipe: HANDLE, binding: &Binding) -> Result<OwnedHandle, String> 
     }
     Ok(process) // retained to prevent PID reuse during dispatch
 }
+fn allow_owner_process_query(binding: &Binding) -> Result<(), String> {
+    // Query-only access lets the bound ordinary client retain and authenticate
+    // this LocalSystem process. It grants no token query, write, kill or debug.
+    let text = wide(format!(
+        "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00001000;;;{})",
+        binding.owner_sid
+    ));
+    let mut descriptor = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            text.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(fail());
+    }
+    let _memory = Local(descriptor);
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut acl = std::ptr::null_mut();
+    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl, &mut defaulted) } == 0
+        || present == 0
+        || acl.is_null()
+    {
+        return Err(fail());
+    }
+    if unsafe {
+        SetSecurityInfo(
+            GetCurrentProcess(),
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            acl,
+            std::ptr::null_mut(),
+        )
+    } != 0
+    {
+        return Err(fail());
+    }
+    Ok(())
+}
 fn pipe(binding: &Binding) -> Result<OwnedHandle, String> {
     // Owner gets generic read + write data, including read-only metadata needed
     // by CreateFile. Do not grant generic write/create-pipe-instance.
@@ -353,6 +398,7 @@ fn send(raw: HANDLE, bytes: &[u8], deadline: Instant) -> Result<(), String> {
 }
 fn serve(status_handle: SERVICE_STATUS_HANDLE) -> Result<(), String> {
     let (binding, _executable_lock) = binding()?;
+    allow_owner_process_query(&binding)?;
     let pipe = pipe(&binding)?;
     let running = SERVICE_STATUS {
         dwServiceType: SERVICE_WIN32_OWN_PROCESS,
@@ -691,6 +737,47 @@ fn verify_untrusted_pipe_boundary() {
         Ok("1")
     );
     assert_eq!(std::env::var("CI").as_deref(), Ok("true"));
+    let manager = ServiceHandle(unsafe {
+        OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT)
+    });
+    assert!(!manager.0.is_null());
+    let service = ServiceHandle(unsafe {
+        OpenServiceW(manager.0, wide(SERVICE_NAME).as_ptr(), SERVICE_QUERY_STATUS)
+    });
+    assert!(!service.0.is_null());
+    let mut status = SERVICE_STATUS_PROCESS::default();
+    let mut size = 0;
+    assert_ne!(
+        unsafe {
+            QueryServiceStatusEx(
+                service.0,
+                SC_STATUS_PROCESS_INFO,
+                (&mut status as *mut SERVICE_STATUS_PROCESS).cast(),
+                std::mem::size_of_val(&status) as u32,
+                &mut size,
+            )
+        },
+        0
+    );
+    assert_eq!(status.dwCurrentState, SERVICE_RUNNING);
+    for access in [
+        PROCESS_TERMINATE,
+        PROCESS_VM_WRITE | PROCESS_VM_OPERATION,
+        PROCESS_CREATE_THREAD,
+        WRITE_DAC,
+        WRITE_OWNER,
+    ] {
+        let handle = unsafe { OpenProcess(access, 0, status.dwProcessId) };
+        if !handle.is_null() {
+            unsafe {
+                CloseHandle(handle);
+            }
+        }
+        assert!(
+            handle.is_null(),
+            "Ordinary owner acquired mutating service process access"
+        );
+    }
     // This Rust test process shares the installed owner's SID but its image
     // is not the pinned desktop client, so it must receive no Status.
     assert!(request(&Request::Status).is_err());
