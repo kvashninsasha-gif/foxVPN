@@ -49,6 +49,9 @@ def build(target, work, network=False, scan=False):
     if goos=='darwin':
         subprocess.run(['/usr/bin/codesign','--force','--sign','-','--options','runtime','--identifier','ru.smartvpn.network-core' if network else 'ru.smartvpn.proxy-core',str(stage)],check=True)
     shutil.copyfile(stage,binary); binary.chmod(0o755)
+    if goos=='windows':
+        # Tauri maps the neutral source pathname to core/sing-box.exe.
+        shutil.copyfile(binary, ROOT/'core/sing-box')
     info = dict(version='v'+VERSION, upstream_version=manifest['version'], platform=target, binary_sha256=digest(binary), source_archive_sha256=manifest['sha256'], source=manifest['source'], toolchain=TOOLCHAIN, tags=TAGS, dependency_overlay_sha256={n:digest(ROOT/'vendor/core-patches'/n) for n in ['go.mod','go.sum']}, official_binary=False, vulnerability_scan='assessed-binary-symbols-pass' if scan else 'not-run')
     if network: info['patch']='scripts/macos/privilege_drop.go'
     (ROOT/'core'/('network-version.json' if network else 'version.json')).write_text(json.dumps(info,indent=2)+'\n')
