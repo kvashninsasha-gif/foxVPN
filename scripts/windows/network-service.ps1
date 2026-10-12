@@ -49,7 +49,9 @@ function Stop-OwnService {
 }
 function Protect([string]$Path, [string]$Sid) {
     # Protected owner, inherited ACL disabled, no user write/replace permissions.
-    & "$env:SystemRoot\System32\icacls.exe" $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*$($Sid):(OI)(CI)RX" /setowner '*S-1-5-32-544' | Out-Null
+    & "$env:SystemRoot\System32\icacls.exe" $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*$($Sid):(OI)(CI)RX" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot apply protected file permissions' }
+    & "$env:SystemRoot\System32\icacls.exe" $Path /setowner '*S-1-5-32-544' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the service directory' }
 }
 if ($Mode -eq 'Remove') {
@@ -108,7 +110,9 @@ try {
     $binding = @{ protocol = 1; owner_sid = $OwnerSid; client_sha256 = $ExpectedClientSha256; service_sha256 = $ExpectedServiceSha256 } | ConvertTo-Json
     [IO.File]::WriteAllText("$slot\binding.json", $binding, [Text.UTF8Encoding]::new($false))
     foreach ($file in @('foxvpn-windows-service.exe', 'binding.json')) {
-        & "$env:SystemRoot\System32\icacls.exe" "$slot\$file" /reset /setowner '*S-1-5-32-544' | Out-Null
+        & "$env:SystemRoot\System32\icacls.exe" "$slot\$file" /reset | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot apply protected file permissions' }
+        & "$env:SystemRoot\System32\icacls.exe" "$slot\$file" /setowner '*S-1-5-32-544' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Cannot protect a service file' }
     }
     if ($created) { Run-Sc -Arguments @('create', $name, 'binPath=', '"C:\Program Files\foxVPN Network\foxvpn-windows-service.exe"', 'start=', 'demand', 'obj=', 'LocalSystem', 'DisplayName=', 'foxVPN Network (experimental transport)') }

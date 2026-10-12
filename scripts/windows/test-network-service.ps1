@@ -13,10 +13,14 @@ $clientHash = (Get-FileHash $ProbeBinary -Algorithm SHA256).Hash.ToLowerInvarian
 $installed = $false
 try {
     New-Item -ItemType Directory -Path $clientDir | Out-Null
-    & "$env:SystemRoot\System32\icacls.exe" $clientDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*$($sid):(OI)(CI)RX" /setowner '*S-1-5-32-544' | Out-Null
+    & "$env:SystemRoot\System32\icacls.exe" $clientDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*$($sid):(OI)(CI)RX" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot apply protected file permissions' }
+    & "$env:SystemRoot\System32\icacls.exe" $clientDir /setowner '*S-1-5-32-544' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the test client' }
     Copy-Item -LiteralPath $ProbeBinary -Destination $client
-    & "$env:SystemRoot\System32\icacls.exe" $client /reset /setowner '*S-1-5-32-544' | Out-Null
+    & "$env:SystemRoot\System32\icacls.exe" $client /reset | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot apply protected file permissions' }
+    & "$env:SystemRoot\System32\icacls.exe" $client /setowner '*S-1-5-32-544' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the test executable' }
     & "$PSScriptRoot\network-service.ps1" -Mode Install -ServiceBinary $ServiceBinary -ExpectedServiceSha256 $serviceHash -ExpectedClientSha256 $clientHash -OwnerSid $sid
     $installed = $true
