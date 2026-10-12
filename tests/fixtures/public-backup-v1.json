@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "name": "Публичный сервер 1 ✓",
+      "address": "example.com",
+      "port": 443,
+      "uuid": "11111111-1111-4111-8111-000000000001",
+      "transport": "tcp",
+      "security": "tls",
+      "params": {
+        "security": "tls",
+        "type": "tcp",
+        "sni": "example.com",
+        "encryption": "none"
+      },
+      "favorite": true,
+      "group": "Тестовая группа",
+      "subscription": "public-subscription",
+      "latency_ms": 41,
+      "download_mbps": 13.5,
+      "status": "available",
+      "successes": 6,
+      "failures": 1,
+      "last_error": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "name": "Публичный сервер 2 ✓",
+      "address": "2001:db8::42",
+      "port": 8443,
+      "uuid": "11111111-1111-4111-8111-000000000002",
+      "transport": "ws",
+      "security": "tls",
+      "params": {
+        "security": "tls",
+        "type": "ws",
+        "sni": "example.org",
+        "path": "/public fixture",
+        "host": "example.org"
+      },
+      "favorite": false,
+      "group": "Тестовая группа",
+      "subscription": "public-subscription",
+      "latency_ms": 42,
+      "download_mbps": 14.5,
+      "status": "available",
+      "successes": 7,
+      "failures": 2,
+      "last_error": "public fixture observation"
+    }
+  ],
+  "selected": "00000000-0000-4000-8000-000000000001",
+  "rules": [
+    {
+      "domain": "example.com",
+      "route": "vpn"
+    },
+    {
+      "domain": "*.example.org",
+      "route": "direct"
+    },
+    {
+      "domain": "пример.рф",
+      "route": "vpn"
+    }
+  ],
+  "settings": {
+    "mode": "custom",
+    "tun": true,
+    "kill_switch": true,
+    "proxy_acknowledged": false,
+    "windows_proxy_auto": false,
+    "proxy_port": 2180,
+    "dns_protection": true,
+    "dns_provider": "quad9",
+    "dns_transport": "tls",
+    "auto_connect": false,
+    "start_minimized": true,
+    "restore": true,
+    "health_interval": 60,
+    "auto_metrics": false,
+    "metric_interval": 120,
+    "failover": true,
+    "favorites_only": true,
+    "strategy": "stability",
+    "subscription_interval": 43200
+  },
+  "subscriptions": [
+    {
+      "id": "public-subscription",
+      "name": "Публичная подписка ✓",
+      "url": "https://example.org/public-fixture.txt",
+      "updated_at": 1791676800,
+      "server_count": 2
+    }
+  ]
+}

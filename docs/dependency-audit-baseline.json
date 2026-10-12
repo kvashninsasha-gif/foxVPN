@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "npm": [],
+  "rust": [
+    {
+      "advisory": "RUSTSEC-2024-0429",
+      "package": "glib",
+      "version": "0.18.5",
+      "kind": "unsound",
+      "disposition": "not_in_shipped_targets",
+      "reviewed": "2026-10-11",
+      "expires": "2026-12-31",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0429.html",
+      "rationale": "glib VariantStrIter has real undefined behaviour; >=0.20.0 is patched. This exact 0.18.5 package is a Linux GTK transitive dependency in the cross-platform lockfile and is absent from production/build trees for Mac arm64, Mac Intel and Windows x64. Every audit recomputes these trees; becoming reachable fails. This is not a Linux exception and does not declare the vulnerable crate safe. Review the Tauri GTK dependency chain before any Linux release."
+    },
+    {
+      "advisory": "RUSTSEC-2024-0370",
+      "package": "proc-macro-error",
+      "version": "1.0.4",
+      "kind": "unmaintained",
+      "disposition": "not_in_shipped_targets",
+      "reviewed": "2026-10-11",
+      "expires": "2026-12-31",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0370.html",
+      "rationale": "The upstream maintainer is inactive and there is no patched version; this is maintenance debt, not an all-clear. This exact procedural macro is only reached through Linux GTK-derived build dependencies and is absent from Mac arm64, Mac Intel and Windows x64 production/build trees. Every audit proves absence, including build dependencies. A future reachable package/new advisory/version must be reviewed separately; a Linux release must revisit or migrate this dependency."
+    }
+  ]
+}

@@ -13,6 +13,9 @@ on:
       - 'apps/desktop/**'
       - '!apps/desktop/tests/**'
       - 'scripts/download-core.py'
+      - 'scripts/build-core.py'
+      - 'scripts/check-go-advisories.py'
+      - 'vendor/**'
       - 'scripts/test-windows-proxy-guardian.py'
       - 'scripts/test-windows-installer-update.ps1'
       - 'scripts/test-core-startup.py'
@@ -41,14 +44,31 @@ jobs:
           if (!(Test-Path "$clang\libclang.dll")) { throw 'LLVM libclang is required' }
           "LIBCLANG_PATH=$clang" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           cmake --version
-      - name: Download and verify pinned Windows core
-        run: python scripts/download-core.py --platform windows-amd64
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.9'
+          cache: false
+      - name: Verify fail-closed Go advisory policy
+        run: python scripts/test-go-advisories.py
+      - name: Install pinned Go vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Build and audit pinned Windows core
+        run: python scripts/build-core.py --platform windows-amd64 --work-dir target/core-source --scan
       - name: Rust tests with real local VLESS and core schema checks
         run: cargo test --locked --workspace
         env:
           SMARTVPN_TEST_CORE: ${{ github.workspace }}/core/sing-box.exe
+      - name: Download public original signed predecessor fixtures
+        run: python scripts/download-signed-windows-fixtures.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Native Windows GUI cache and original signature regressions
+        run: cargo test --locked -p smart-vpn-desktop windows_gui_rollback -- --ignored --test-threads=1
+        env:
+          FOXVPN_TEST_WINDOWS_UPDATE_ARTIFACT: ${{ github.workspace }}/target/signed-windows-fixtures/foxVPN_0.1.26_x64-setup.exe
+          FOXVPN_TEST_WINDOWS_UPDATE_VERSION: '0.1.26'
+          FOXVPN_TEST_WINDOWS_UPDATE_NEXT_ARTIFACT: ${{ github.workspace }}/target/signed-windows-fixtures/foxVPN_0.1.27_x64-setup.exe
+          FOXVPN_TEST_WINDOWS_UPDATE_NEXT_VERSION: '0.1.27'
       - name: Native proxy setup, restore, and forced parent death
         run: cargo test --locked -p smart-vpn-desktop windows_real_proxy_restore_and_parent_death -- --ignored --test-threads=1
         env:
@@ -88,7 +108,21 @@ jobs:
           name: foxVPN-Windows-x64
           if-no-files-found: error
           path: |
+            target/core-source/advisory-assessment.json
+            target/core-source/govulncheck.json
+            target/core-source/compiled-packages.json
             target/release/bundle/nsis/*.exe
             target/release/bundle/nsis/SHA256SUMS.txt
             target/release/bundle/nsis/windows-core-startup.json
             target/release/bundle/nsis/windows-local-ai.json
+
+      - name: Preserve exact Go scan and graph on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foxVPN-Go-audit-windows
+          path: |
+            target/core-source/govulncheck.json
+            target/core-source/compiled-packages.json
+            target/core-source/advisory-assessment.json
+          if-no-files-found: warn

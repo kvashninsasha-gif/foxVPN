@@ -1,0 +1,22 @@
+name: Windows service IPC boundary fixture
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['Cargo.*', 'src/windows_service**', 'src/bin/foxvpn-windows-service.rs', 'examples/windows-service-probe.rs', 'scripts/windows/**', '.github/workflows/windows-service.yml']
+permissions:
+  contents: read
+jobs:
+  ipc:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked -p smart-vpn-engine --bin foxvpn-windows-service --example windows-service-probe
+      - name: Disposable service authentication and lifecycle fixture
+        shell: pwsh
+        run: ./scripts/windows/test-network-service.ps1 -ServiceBinary target/debug/foxvpn-windows-service.exe -ProbeBinary target/debug/examples/windows-service-probe.exe
+        env:
+          FOXVPN_TEST_ALLOW_SERVICE: '1'
+          CI: 'true'

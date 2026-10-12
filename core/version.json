@@ -1,8 +1,16 @@
 {
-  "version": "v1.14.2",
-  "archive_sha256": "925c5382eca8492b0150f868a6db20b18290a38700e621724b3703fd453e032d",
-  "binary_sha256": "d652879eed7e38b866fa980bc2e119dcdb13968fe5e6583670293a258686d0e7",
-  "source": "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-darwin-arm64.tar.gz",
+  "version": "v1.14.3-foxVPN.2",
+  "upstream_version": "1.14.3",
   "platform": "darwin-arm64",
-  "verified_against_github_digest": true
+  "binary_sha256": "665ce5207cf94e611d741a2aa8de3886ac69d6d6cf76fccfb371e6821e6dce83",
+  "source_archive_sha256": "e10dee2a000c3b4f87b33b2a39b30ce8c65a870a5bdda31b3b2f67760d65b37e",
+  "source": "https://api.github.com/repos/SagerNet/sing-box/tarball/7054cac5124465ffdb145870d7c01885566711b1",
+  "toolchain": "go1.26.9",
+  "tags": "with_utls,with_gvisor,with_clash_api",
+  "dependency_overlay_sha256": {
+    "go.mod": "2c335df61e036819c4a0694e32748b4a3998c0faf898fc05bcc7c0213c27baf5",
+    "go.sum": "9a5401b65d054ed25bfa329a87752befd943e2f4b11e678ba1395983f50372f7"
+  },
+  "official_binary": false,
+  "vulnerability_scan": "assessed-binary-symbols-pass"
 }

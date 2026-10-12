@@ -11,6 +11,9 @@ on:
       - 'examples/**'
       - 'locales/**'
       - 'scripts/download-core.py'
+      - 'scripts/build-core.py'
+      - 'scripts/check-go-advisories.py'
+      - 'vendor/**'
       - 'scripts/test-core-startup.py'
       - 'macos/**'
 permissions:
@@ -25,10 +28,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Download verified pinned core for runner architecture
-        run: python3 scripts/download-core.py
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.9'
+          cache: false
+      - name: Verify fail-closed Go advisory policy
+        run: python scripts/test-go-advisories.py
+      - name: Install pinned Go vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Build and audit pinned core for runner architecture
+        run: python3 scripts/build-core.py --work-dir target/core-source --scan
       - name: Engine tests with real core
         run: cargo test --locked -p smart-vpn-engine
         env:
@@ -41,4 +50,19 @@ jobs:
         with:
           name: foxVPN-macOS-core-startup
           if-no-files-found: error
-          path: target/macos-core-startup.json
+          path: |
+            target/macos-core-startup.json
+            target/core-source/advisory-assessment.json
+            target/core-source/govulncheck.json
+            target/core-source/compiled-packages.json
+
+      - name: Preserve exact Go scan and graph on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foxVPN-Go-audit-macos
+          path: |
+            target/core-source/govulncheck.json
+            target/core-source/compiled-packages.json
+            target/core-source/advisory-assessment.json
+          if-no-files-found: warn

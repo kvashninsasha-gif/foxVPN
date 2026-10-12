@@ -6,6 +6,7 @@
 #include <bsm/audit.h>
 #include <bsm/libbsm.h>
 #include <stdatomic.h>
+#include <libproc.h>
 
 static int hashForCode(SecCodeRef code, char *out) {
  CFDictionaryRef info = NULL;
@@ -27,6 +28,21 @@ int fox_bundle_hash(const char *path, char *out) {
  SecStaticCodeRef code=NULL;
  if(SecStaticCodeCreateWithPath((__bridge CFURLRef)url,kSecCSDefaultFlags,&code)!=errSecSuccess) return 0;
  int ok=SecStaticCodeCheckValidity(code,kSecCSStrictValidate|kSecCSCheckAllArchitectures,NULL)==errSecSuccess && hashForCode((SecCodeRef)code,out);
+ CFRelease(code); return ok;
+ }
+}
+// GUI rollback authenticates a process before asking it to terminate. PID and UID
+// come from the kernel; the receipt cannot authorize signalling another owner.
+int fox_process_hash(unsigned int pid, unsigned int owner, char *out) {
+ @autoreleasepool {
+ if (pid < 2 || pid > INT_MAX) return 0;
+ struct proc_bsdinfo info;
+ if (proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)
+     || info.pbi_uid != owner || info.pbi_ruid != owner) return 0;
+ NSDictionary *attributes=@{(__bridge id)kSecGuestAttributePid:@(pid)};
+ SecCodeRef code=NULL;
+ if (SecCodeCopyGuestWithAttributes(NULL,(__bridge CFDictionaryRef)attributes,kSecCSDefaultFlags,&code)!=errSecSuccess) return 0;
+ int ok=SecCodeCheckValidity(code,kSecCSStrictValidate,NULL)==errSecSuccess && hashForCode(code,out);
  CFRelease(code); return ok;
  }
 }

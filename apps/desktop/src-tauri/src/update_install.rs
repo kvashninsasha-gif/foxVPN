@@ -65,6 +65,52 @@ pub fn prepare(bytes: &[u8], target: &Path, version: &str) -> Result<Prepared, S
         }
     }
     let app = stage.path().join("foxVPN.app");
+    verify_bundle(&app, version)?;
+    sync_tree(&app)?;
+    fs::File::open(stage.path())
+        .and_then(|f| f.sync_all())
+        .map_err(|_| "Не удалось надёжно сохранить подготовленное обновление.".to_string())?;
+    Ok(Prepared {
+        stage,
+        target: target.to_owned(),
+    })
+}
+fn sync_tree(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "Не удалось сохранить подготовленное обновление.")?;
+    if metadata.is_dir() {
+        for entry in
+            fs::read_dir(path).map_err(|_| "Не удалось сохранить подготовленное обновление.")?
+        {
+            sync_tree(
+                &entry
+                    .map_err(|_| "Не удалось сохранить подготовленное обновление.")?
+                    .path(),
+            )?;
+        }
+    } else if !metadata.is_file() {
+        return Err("Подготовленное обновление содержит недопустимую ссылку.".into());
+    }
+    fs::File::open(path)
+        .and_then(|f| f.sync_all())
+        .map_err(|_| "Не удалось надёжно сохранить подготовленное обновление.".into())
+}
+pub fn bundle_version(app: &Path) -> Result<String, String> {
+    if !fs::symlink_metadata(app).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Приложение заменено ссылкой или отсутствует.".into());
+    }
+    let info = plist::Value::from_file(app.join("Contents/Info.plist"))
+        .map_err(|_| "Не найдена версия приложения.")?;
+    info.as_dictionary()
+        .and_then(|d| d.get("CFBundleShortVersionString"))
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned)
+        .ok_or_else(|| "Не найдена версия приложения.".into())
+}
+pub fn verify_bundle(app: &Path, version: &str) -> Result<(), String> {
+    if !fs::symlink_metadata(app).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Приложение заменено ссылкой или отсутствует.".into());
+    }
     let info = plist::Value::from_file(app.join("Contents/Info.plist"))
         .map_err(|_| "Нет метаданных приложения в обновлении.")?;
     let info = info
@@ -75,7 +121,15 @@ pub fn prepare(bytes: &[u8], target: &Path, version: &str) -> Result<Prepared, S
         .and_then(plist::Value::as_string)
         != Some("ru.smartvpn.router")
         || info
+            .get("CFBundlePackageType")
+            .and_then(plist::Value::as_string)
+            != Some("APPL")
+        || info
             .get("CFBundleShortVersionString")
+            .and_then(plist::Value::as_string)
+            != Some(version)
+        || info
+            .get("CFBundleVersion")
             .and_then(plist::Value::as_string)
             != Some(version)
         || info
@@ -85,9 +139,26 @@ pub fn prepare(bytes: &[u8], target: &Path, version: &str) -> Result<Prepared, S
     {
         return Err("Версия или идентификатор приложения не совпадают с обновлением.".into());
     }
+    let executable = app.join("Contents/MacOS/smart-vpn-desktop");
+    if !fs::symlink_metadata(&executable).is_ok_and(|m| m.file_type().is_file()) {
+        return Err("Исполняемый файл приложения отсутствует или заменён ссылкой.".into());
+    }
+    use std::io::Read;
+    let mut header = [0u8; 32];
+    fs::File::open(&executable)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(|_| "Неверный исполняемый файл обновления.")?;
+    // arm64 channel accepts the thin 64-bit Mach-O CPU_TYPE_ARM64 binary only.
+    // A universal/Intel archive cannot silently cross an architecture-specific feed.
+    if header[..4] != [0xcf, 0xfa, 0xed, 0xfe]
+        || u32::from_le_bytes(header[4..8].try_into().unwrap()) != 0x0100_000c
+        || u32::from_le_bytes(header[12..16].try_into().unwrap()) != 2
+    {
+        return Err("Обновление этого канала должно содержать приложение macOS arm64.".into());
+    }
     let status = Command::new("/usr/bin/codesign")
         .args(["--verify", "--deep", "--strict"])
-        .arg(&app)
+        .arg(app)
         .output()
         .map_err(|_| "Не удалось проверить подпись macOS.")?;
     if !status.status.success() {
@@ -104,12 +175,52 @@ pub fn prepare(bytes: &[u8], target: &Path, version: &str) -> Result<Prepared, S
             return Err("Обновление не содержит ядро или сетевой компонент.".into());
         }
     }
-    Ok(Prepared {
-        stage,
-        target: target.to_owned(),
-    })
+    Ok(())
+}
+pub fn exchange_bundles(target: &Path, previous: &Path) -> Result<(), String> {
+    for path in [target, previous] {
+        if !fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir()) {
+            return Err("Приложение заменено ссылкой или отсутствует.".into());
+        }
+    }
+    rename_native(previous, target, 2)
+        .map_err(|_| "Не удалось атомарно вернуть приложение.".to_string())?;
+    for parent in [target.parent(), previous.parent()].into_iter().flatten() {
+        fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| {
+                "Приложение заменено, но сохранение каталога не подтверждено.".to_string()
+            })?;
+    }
+    Ok(())
 }
 impl Prepared {
+    pub fn commit_with_recovery(self, journal: PathBuf, version: &str) -> Result<PathBuf, String> {
+        let monitor = crate::mac_gui_rollback::Installation::prepare(
+            journal,
+            &self.target,
+            &self.stage.path().join("foxVPN.app"),
+            version,
+            true,
+        )?;
+        let stage = self.stage.keep();
+        let result = replace(&self.target, &stage.join("foxVPN.app"), monitor.backup());
+        match result {
+            Ok(path) => {
+                // Once exchange succeeds, readiness watchdog owns recovery even if this write fails.
+                let _ = monitor.installed();
+                if path == monitor.backup() {
+                    let _ = fs::remove_dir(&stage);
+                }
+                Ok(path)
+            }
+            Err(error) => {
+                monitor.failed();
+                let _ = fs::remove_dir_all(&stage);
+                Err(error)
+            }
+        }
+    }
     pub fn expected_hash(&self) -> Result<String, String> {
         smart_vpn_engine::component_update::macos::bundle_hash(
             &self.stage.path().join("foxVPN.app"),
@@ -165,8 +276,19 @@ fn replace(target: &Path, new: &Path, backup: &Path) -> Result<PathBuf, String> 
     // No two-rename fallback: a crash must never leave the installed path absent.
     rename_native(new, target, 2).map_err(|_| "Не удалось атомарно заменить приложение. Прежняя копия остаётся на месте; проверьте права и файловую систему.".to_string())?;
     if rename_native(new, backup, 4).is_ok() {
+        // Preserve both bundles even if directory fsync fails after exchange. The
+        // recovery receipt remains durable and installation must never delete its predecessor.
+        let _ = target
+            .parent()
+            .map(|parent| fs::File::open(parent).and_then(|f| f.sync_all()));
         Ok(backup.to_owned())
     } else {
+        let _ = target
+            .parent()
+            .map(|parent| fs::File::open(parent).and_then(|f| f.sync_all()));
+        let _ = new
+            .parent()
+            .map(|parent| fs::File::open(parent).and_then(|f| f.sync_all()));
         // Installation succeeded. Keep the old bundle at its current location.
         Ok(new.to_owned())
     }

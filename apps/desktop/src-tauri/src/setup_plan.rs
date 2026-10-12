@@ -202,7 +202,7 @@ fn configured(p: &Profile) -> Result<String, String> {
 }
 /// A plan changes configuration, never overwrites newer measurements or
 /// subscription timestamps. Credentials/identity must still match for copying.
-fn with_observations(desired: &Profile, latest: &Profile) -> Result<Profile, String> {
+pub(super) fn with_observations(desired: &Profile, latest: &Profile) -> Result<Profile, String> {
     let mut target = desired.clone();
     let observations: std::collections::HashMap<_, _> =
         latest.servers.iter().map(|s| (s.id.as_str(), s)).collect();
@@ -462,6 +462,7 @@ pub async fn prepare_setup_plan(
         if state.installing.load(Ordering::SeqCst) {
             return Err("Дождитесь обновления приложения".into());
         }
+        super::setup_recovery::ensure_resolved(&state)?;
         let stamp = ai::stamp(&state)?;
         let check = plans
             .check
@@ -535,6 +536,18 @@ trait Backend {
     fn save(&mut self, p: &Profile) -> Result<(), String>;
     fn start(&mut self) -> Result<(), String>;
     fn verify(&mut self) -> Result<(), String>;
+    fn begin(&mut self, _before: &Profile, _after: &Profile, _active: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn checkpoint(
+        &mut self,
+        _phase: smart_vpn_engine::setup_recovery::Phase,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn resolved(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn complete(&mut self) -> Result<(), String> {
         if self.current() {
             Ok(())
@@ -554,25 +567,36 @@ fn transact(
 ) -> Result<(), String> {
     let mut touched = false;
     let modifies = configured(before)? != configured(after)?;
+    let mut journaled = false;
     let result = (|| {
         if !b.current() {
             return Err("Действие отменено или состояние изменилось".into());
         }
+        if modifies || reconnect || (connect && !active) {
+            b.begin(before, after, active)?;
+            journaled = true;
+        }
         if reconnect {
-            b.stop()?;
+            b.checkpoint(smart_vpn_engine::setup_recovery::Phase::Stopping)?;
             touched = true;
+            b.stop()?;
         }
         if !b.current() {
             return Err("Действие отменено".into());
         }
         if modifies || reconnect {
+            b.checkpoint(smart_vpn_engine::setup_recovery::Phase::Saving)?;
             touched = true;
             b.save(after)?;
         }
         if connect {
             if !active || reconnect {
+                b.checkpoint(smart_vpn_engine::setup_recovery::Phase::Starting)?;
                 touched = true;
                 b.start()?;
+            }
+            if journaled {
+                b.checkpoint(smart_vpn_engine::setup_recovery::Phase::Verifying)?;
             }
             b.verify()?;
         }
@@ -580,9 +604,15 @@ fn transact(
     })();
     if let Err(error) = result {
         if !touched {
+            if journaled {
+                b.resolved()
+                    .map_err(|cleanup| format!("{error}. Журнал требует проверки: {cleanup}"))?;
+            }
             return Err(error);
         }
         let was_current = b.current();
+        b.checkpoint(smart_vpn_engine::setup_recovery::Phase::Restoring)
+            .map_err(|journal| format!("{error}. Не удалось сохранить этап возврата: {journal}"))?;
         let stopped = b.stop();
         // Never restore/restart while stopping a possibly live tunnel failed.
         if let Err(stop) = stopped {
@@ -600,6 +630,9 @@ fn transact(
                 ));
             }
         }
+        b.resolved().map_err(|journal| {
+            format!("{error}. Прежние настройки возвращены, журнал требует проверки: {journal}")
+        })?;
         return Err(format!("{error}. Прежние настройки возвращены"));
     }
     Ok(())
@@ -620,8 +653,63 @@ struct Live<'a> {
     state: &'a State,
     plans: &'a Plans,
     ticket: u64,
+    lease: Option<&'a smart_vpn_engine::settings::ConfigurationLock>,
+    journal_expected: bool,
+}
+fn owned_recovery(
+    state: &State,
+    plans: &Plans,
+) -> Result<smart_vpn_engine::setup_recovery::Record, String> {
+    let record = state
+        .vault
+        .load_setup_recovery()?
+        .ok_or("Журнал настройки исчез. Действие остановлено")?;
+    let id = plans
+        .operation_id
+        .lock()
+        .map_err(|_| "Настройка недоступна")?;
+    if !record.pending() || record.operation_id != *id {
+        return Err("Журнал относится к другой операции. Действие остановлено".into());
+    }
+    Ok(record)
 }
 impl Backend for Live<'_> {
+    fn begin(&mut self, before: &Profile, after: &Profile, active: bool) -> Result<(), String> {
+        if self
+            .state
+            .vault
+            .load_setup_recovery()?
+            .is_some_and(|r| r.pending())
+        {
+            return Err("Сначала завершите восстановление незавершённой настройки".into());
+        }
+        let id = self
+            .plans
+            .operation_id
+            .lock()
+            .map_err(|_| "Настройка недоступна")?
+            .clone();
+        self.state
+            .vault
+            .save_setup_recovery(&smart_vpn_engine::setup_recovery::Record::new(
+                &id, before, after, active,
+            )?)?;
+        self.journal_expected = true;
+        Ok(())
+    }
+    fn checkpoint(&mut self, phase: smart_vpn_engine::setup_recovery::Phase) -> Result<(), String> {
+        let mut record = owned_recovery(self.state, self.plans)?;
+        record.phase = phase;
+        self.state.vault.save_setup_recovery(&record)
+    }
+    fn resolved(&mut self) -> Result<(), String> {
+        let mut record = owned_recovery(self.state, self.plans)?;
+        record.phase = smart_vpn_engine::setup_recovery::Phase::Restored;
+        self.state.vault.save_setup_recovery(&record)?;
+        self.state.vault.clear_setup_recovery()?;
+        self.journal_expected = false;
+        Ok(())
+    }
     fn current(&self) -> bool {
         self.plans.cancel.lock().is_ok_and(|cancel| !*cancel)
             && self.state.wanted.current(self.ticket)
@@ -639,6 +727,12 @@ impl Backend for Live<'_> {
         {
             return Err("Действие отменено".into());
         }
+        if self.journal_expected || self.state.vault.load_setup_recovery()?.is_some() {
+            let mut r = owned_recovery(self.state, self.plans)?;
+            r.phase = smart_vpn_engine::setup_recovery::Phase::Committed;
+            self.state.vault.save_setup_recovery(&r)?;
+            let _ = self.state.vault.clear_setup_recovery();
+        }
         self.plans.operation.store(0, Ordering::SeqCst);
         Ok(())
     }
@@ -647,7 +741,11 @@ impl Backend for Live<'_> {
     }
     fn save(&mut self, p: &Profile) -> Result<(), String> {
         p.validate()?;
-        self.state.vault.save(p)?;
+        if let Some(lease) = self.lease {
+            self.state.vault.save_locked(p, lease)?;
+        } else {
+            self.state.vault.save(p)?;
+        }
         *self
             .state
             .profile
@@ -659,7 +757,13 @@ impl Backend for Live<'_> {
         if !self.current() {
             return Err("Действие отменено".into());
         }
-        super::finish_connect_locked(self.state, self.ticket, false).map(|_| ())
+        let id = self
+            .plans
+            .operation_id
+            .lock()
+            .map_err(|_| "Настройка недоступна")?
+            .clone();
+        super::finish_connect_authorized(self.state, self.ticket, false, Some(&id)).map(|_| ())
     }
     fn verify(&mut self) -> Result<(), String> {
         if !self.current() {
@@ -744,6 +848,20 @@ pub async fn apply_setup_plan(
         if state.installing.load(Ordering::SeqCst) {
             return Err("Дождитесь обновления приложения".into());
         }
+        let lease = state.vault.lock_configuration()?;
+        let persisted = state.vault.load()?;
+        persisted.validate()?;
+        if configured(&persisted)?
+            != configured(
+                &*state
+                    .profile
+                    .lock()
+                    .map_err(|_| "Не удалось прочитать параметры")?,
+            )?
+        {
+            return Err("Параметры изменились в другом окне. Повторите проверку".into());
+        }
+        super::setup_recovery::ensure_resolved(&state)?;
         let mut stored = plans.draft.lock().map_err(|_| "План недоступен")?;
         let draft = stored.as_ref().ok_or("Сначала подготовьте план")?;
         fresh(
@@ -768,11 +886,7 @@ pub async fn apply_setup_plan(
         if free_port(draft.after.settings.proxy_port, owned)? != draft.after.settings.proxy_port {
             return Err("Порт заняли после подготовки плана. Подготовьте новый план".into());
         }
-        let before = state
-            .profile
-            .lock()
-            .map_err(|_| "Не удалось прочитать настройки")?
-            .clone();
+        let before = persisted;
         let after = with_observations(&draft.after, &before)?;
         let ticket = state.wanted.request()?;
         let _ = app.emit(
@@ -784,6 +898,8 @@ pub async fn apply_setup_plan(
                 state: &state,
                 plans: &plans,
                 ticket,
+                lease: Some(&lease),
+                journal_expected: false,
             },
             &before,
             &after,
@@ -852,14 +968,18 @@ pub async fn undo_setup_plan(
     tauri::async_runtime::spawn_blocking(move || {
         let _busy=plans.acquire(3, &undo_id)?;let _measure=state.measurements.lock().map_err(|_|"Дождитесь проверки")?;let _gate=state.gate.lock().map_err(|_|"Настройки заняты")?;
         if state.installing.load(Ordering::SeqCst){return Err("Дождитесь обновления приложения".into());}
+        let lease=state.vault.lock_configuration()?;
+        let persisted=state.vault.load()?;persisted.validate()?;
+        if configured(&persisted)?!=configured(&*state.profile.lock().map_err(|_|"Не удалось прочитать параметры")?)? {return Err("Параметры изменились в другом окне. Повторите проверку".into());}
+        super::setup_recovery::ensure_resolved(&state)?;
         let mut saved=plans.undo.lock().map_err(|_|"Возврат недоступен")?;
         let undo=saved.as_ref().ok_or("Прежние настройки недоступны после перезапуска приложения")?;
-        let current=state.profile.lock().map_err(|_|"Не удалось прочитать настройки")?.clone();
+        let current=persisted;
         if undo.id!=undo_id||configured(&current)?!=undo.applied||!state.wanted.current(undo.ticket){return Err("После настройки состояние изменилось. Автоматический возврат отменён, чтобы сохранить ваши изменения".into());}
         let undo=saved.take().ok_or("Возврат недоступен")?;drop(saved);
         let active=state.core.lock().map_err(|_|"Нет состояния")?.is_some();let ticket=state.wanted.request()?;
         let restored=with_observations(&undo.before,&current)?;
-        let result=transact(&mut Live {state:&state,plans:&plans,ticket},&current,&restored,active,active,undo.active);
+        let result=transact(&mut Live {state:&state,plans:&plans,ticket,lease:Some(&lease),journal_expected:false},&current,&restored,active,active,undo.active);
         state.wanted.finish_current(ticket);
         if state.core.lock().map_err(|_|"Нет состояния подключения")?.is_none(){state.wanted.fail_current(ticket);}
         let _=app.emit("servers-updated",());result
@@ -944,7 +1064,7 @@ mod tests {
             current: true,
         };
         assert!(transact(&mut b, &p, &p, true, true, true).is_err());
-        assert_eq!(b.log, vec!["stop"]);
+        assert_eq!(b.log, vec!["stop", "stop"]);
         b.log.clear();
         b.current = false;
         assert!(transact(&mut b, &p, &p, false, false, true).is_err());
@@ -1272,6 +1392,8 @@ mod tests {
             state: &state,
             plans: &plans,
             ticket,
+            lease: None,
+            journal_expected: false,
         };
         assert!(!live.current());
         assert!(state.wanted.current(ticket));
@@ -1288,11 +1410,46 @@ mod tests {
         probe: String,
     }
     impl Backend for StoredCore {
+        fn begin(&mut self, before: &Profile, after: &Profile, active: bool) -> Result<(), String> {
+            Live {
+                state: &self.state,
+                plans: &self.plans,
+                ticket: self.ticket,
+                lease: None,
+                journal_expected: false,
+            }
+            .begin(before, after, active)
+        }
+        fn checkpoint(
+            &mut self,
+            phase: smart_vpn_engine::setup_recovery::Phase,
+        ) -> Result<(), String> {
+            Live {
+                state: &self.state,
+                plans: &self.plans,
+                ticket: self.ticket,
+                lease: None,
+                journal_expected: false,
+            }
+            .checkpoint(phase)
+        }
+        fn resolved(&mut self) -> Result<(), String> {
+            Live {
+                state: &self.state,
+                plans: &self.plans,
+                ticket: self.ticket,
+                lease: None,
+                journal_expected: false,
+            }
+            .resolved()
+        }
         fn current(&self) -> bool {
             Live {
                 state: &self.state,
                 plans: &self.plans,
                 ticket: self.ticket,
+                lease: None,
+                journal_expected: false,
             }
             .current()
         }
@@ -1301,6 +1458,8 @@ mod tests {
                 state: &self.state,
                 plans: &self.plans,
                 ticket: self.ticket,
+                lease: None,
+                journal_expected: false,
             }
             .complete()
         }
@@ -1309,6 +1468,8 @@ mod tests {
                 state: &self.state,
                 plans: &self.plans,
                 ticket: self.ticket,
+                lease: None,
+                journal_expected: false,
             }
             .save(p)
         }
@@ -1398,9 +1559,11 @@ mod tests {
         state.binary = binary.into();
         state.vault.save(&p).unwrap();
         let ticket = state.wanted.request().unwrap();
+        let plans = Plans::default();
+        *plans.operation_id.lock().unwrap() = uuid::Uuid::new_v4().to_string();
         let mut backend = StoredCore {
             state,
-            plans: Plans::default(),
+            plans,
             ticket,
             probe: format!("http://{address}/public-transaction"),
         };
@@ -1447,6 +1610,56 @@ mod tests {
         responder.join().unwrap();
     }
     #[test]
+    fn missing_or_foreign_journal_stops_checkpoint_and_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = fixture_profile();
+        let state = fixture_state(before.clone(), dir.path().join("profile.enc"));
+        state.vault.save(&before).unwrap();
+        let ticket = state.wanted.request().unwrap();
+        let plans = Plans::default();
+        let id = uuid::Uuid::new_v4().to_string();
+        let _busy = plans.acquire(2, &id).unwrap();
+        let mut live = Live {
+            state: &state,
+            plans: &plans,
+            ticket,
+            lease: None,
+            journal_expected: false,
+        };
+        live.begin(&before, &before, false).unwrap();
+        state.vault.clear_setup_recovery().unwrap();
+        assert!(live
+            .checkpoint(smart_vpn_engine::setup_recovery::Phase::Saving)
+            .is_err());
+        assert!(live.complete().is_err());
+        let foreign = smart_vpn_engine::setup_recovery::Record::new(
+            &uuid::Uuid::new_v4().to_string(),
+            &before,
+            &before,
+            false,
+        )
+        .unwrap();
+        state.vault.save_setup_recovery(&foreign).unwrap();
+        assert!(live
+            .checkpoint(smart_vpn_engine::setup_recovery::Phase::Restoring)
+            .is_err());
+        assert!(live.resolved().is_err());
+        assert!(live.complete().is_err());
+        assert_eq!(
+            state
+                .vault
+                .load_setup_recovery()
+                .unwrap()
+                .unwrap()
+                .operation_id,
+            foreign.operation_id
+        );
+        assert_eq!(
+            configured(&state.vault.load().unwrap()).unwrap(),
+            configured(&before).unwrap()
+        );
+    }
+    #[test]
     fn cancellation_is_rejected_after_the_transaction_commit_point() {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture_state(fixture_profile(), dir.path().join("profile.enc"));
@@ -1457,6 +1670,8 @@ mod tests {
             state: &state,
             plans: &plans,
             ticket,
+            lease: None,
+            journal_expected: false,
         };
         live.complete().unwrap();
         assert!(plans.request_cancel("public-operation").is_err());

@@ -140,6 +140,94 @@ async fn mark_installing(state: &crate::State) -> Result<(), String> {
     .await
     .map_err(|_| "Не удалось начать установку")?
 }
+#[derive(Serialize)]
+pub struct GuiRecoveryInfo {
+    guidance: Option<String>,
+    pending: bool,
+    restored: bool,
+    failed: bool,
+    prior_version: Option<String>,
+    recovery_id: Option<String>,
+}
+#[tauri::command]
+pub fn gui_update_recovery(app: tauri::AppHandle) -> Result<GuiRecoveryInfo, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = crate::mac_gui_rollback::status(&app)?;
+        Ok(GuiRecoveryInfo {
+            pending: status.pending,
+            restored: status.restored,
+            failed: status.failed,
+            prior_version: status.prior_version,
+            recovery_id: status.recovery_id,
+            guidance: None,
+        })
+    }
+    #[cfg(windows)]
+    {
+        let status = crate::windows_gui_rollback::status(&app)?;
+        Ok(GuiRecoveryInfo {
+            pending: status.pending,
+            restored: status.restored,
+            failed: status.failed,
+            prior_version: status.prior_version,
+            recovery_id: status.recovery_id,
+            guidance: status.guidance,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = app;
+        Ok(GuiRecoveryInfo {
+            pending: false,
+            restored: false,
+            failed: false,
+            prior_version: None,
+            recovery_id: None,
+            guidance: None,
+        })
+    }
+}
+#[tauri::command]
+pub fn acknowledge_gui_recovery(
+    app: tauri::AppHandle,
+    recovery_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::mac_gui_rollback::acknowledge(app, &recovery_id, approved)
+    }
+    #[cfg(windows)]
+    {
+        crate::windows_gui_rollback::acknowledge(&app, &recovery_id, approved)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (app, recovery_id, approved);
+        Ok(())
+    }
+}
+#[tauri::command]
+pub fn confirm_app_readiness(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::mac_gui_rollback::confirm_app_readiness(app.clone())?;
+        let _ = app.emit("gui-update-recovery-changed", ());
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        crate::windows_gui_rollback::confirm_app_readiness(&app)?;
+        let _ = app.emit("gui-update-recovery-changed", ());
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
 #[tauri::command]
 pub async fn update_state(
     app: tauri::AppHandle,
@@ -168,7 +256,7 @@ pub async fn update_state(
     };
     let ready = component == smart_vpn_engine::network_helper::Probe::Ready;
     #[cfg(target_os = "macos")]
-    if ready {
+    if ready && crate::mac_gui_rollback::readiness_confirmed(&app).unwrap_or(false) {
         let is_current = smart_vpn_engine::component_update::macos::public_binding()
             .and_then(|b| {
                 smart_vpn_engine::network_helper::self_hash().map(|hash| b.current == hash)
@@ -346,6 +434,7 @@ pub fn cancel_app_update(state: tauri::State<AppUpdates>) {
 pub async fn install_app_update(
     version: String,
     approved: bool,
+    rollback_approved: Option<bool>,
     app: tauri::AppHandle,
     updates: tauri::State<'_, AppUpdates>,
     vpn: tauri::State<'_, crate::State>,
@@ -359,6 +448,7 @@ pub async fn install_app_update(
     {
         return Err("Дождитесь завершения настройки помощником".into());
     }
+    super::setup_recovery::ensure_resolved(&vpn)?;
     let _busy = updates.acquire()?;
     #[cfg(target_os = "macos")]
     {
@@ -488,9 +578,10 @@ pub async fn install_app_update(
         );
         let state = vpn.inner().clone();
         let app_progress = app.clone();
+        let rollback_journal = crate::mac_gui_rollback::journal_path(&app)?;
+        let rollback_version = update.version.clone();
         let result = tauri::async_runtime::spawn_blocking(move || {
             let result = (|| {
-                state.vault.save(&state.profile.lock().unwrap())?;
                 crate::disconnect(&state)?;
                 if let Some(request) = component_request {
                     let _ = app_progress.emit(
@@ -511,7 +602,13 @@ pub async fn install_app_update(
                         },
                     );
                 }
-                prepared.commit().map(|_| ())
+                if rollback_approved.unwrap_or(false) {
+                    prepared
+                        .commit_with_recovery(rollback_journal, &rollback_version)
+                        .map(|_| ())
+                } else {
+                    prepared.commit().map(|_| ())
+                }
             })();
             if result.is_err() {
                 state.installing.store(false, Ordering::SeqCst);
@@ -533,11 +630,18 @@ pub async fn install_app_update(
     }
     #[cfg(windows)]
     {
-        install_windows(version, app, &updates, &vpn).await
+        install_windows(
+            version,
+            app,
+            &updates,
+            &vpn,
+            rollback_approved.unwrap_or(false),
+        )
+        .await
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        let _ = (version, app, vpn);
+        let _ = (version, rollback_approved, app, vpn);
         Err("Обновление доступно только на macOS Apple Silicon.".into())
     }
 }
@@ -550,6 +654,7 @@ async fn install_windows(
     app: tauri::AppHandle,
     updates: &AppUpdates,
     vpn: &crate::State,
+    rollback_approved: bool,
 ) -> Result<(), String> {
     let mut update = updates
         .offer
@@ -626,15 +731,19 @@ async fn install_windows(
     next.skipped_version = None;
     next.pending_version = None;
     updates.write(&next)?;
-    mark_installing(&vpn).await?;
+    let recovery = crate::windows_gui_rollback::prepare(
+        &app,
+        &bytes,
+        &update.signature,
+        &version,
+        rollback_approved,
+    )?;
+    if let Err(e) = mark_installing(&vpn).await {
+        recovery.abort();
+        return Err(e);
+    }
     let state = vpn.clone();
     let stopped = tauri::async_runtime::spawn_blocking(move || {
-        let profile = state
-            .profile
-            .lock()
-            .map_err(|_| "Не удалось сохранить профиль")?;
-        state.vault.save(&profile)?;
-        drop(profile);
         // Restore the Windows proxy and wait for core/guardian termination before
         // NSIS replaces their executable files. Direct exit bypasses Drop.
         crate::disconnect(&state)
@@ -643,6 +752,7 @@ async fn install_windows(
     .map_err(|_| "Не удалось подготовить завершение foxVPN".to_string())
     .and_then(|v| v);
     if let Err(error) = stopped {
+        recovery.abort();
         vpn.installing.store(false, Ordering::SeqCst);
         let _ = updates.write(&old);
         return Err(format!(
@@ -659,7 +769,14 @@ async fn install_windows(
     );
     // The native updater starts the verified NSIS installer and exits only after
     // ShellExecute succeeds; NSIS handles its own progress, cancellation and restart.
+    if let Err(error) = recovery.arm() {
+        vpn.installing.store(false, Ordering::SeqCst);
+        let _ = updates.write(&old);
+        recovery.abort();
+        return Err(error);
+    }
     if update.install(bytes).is_err() {
+        recovery.abort();
         vpn.installing.store(false, Ordering::SeqCst);
         let _ = updates.write(&old);
         return Err(

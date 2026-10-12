@@ -4,14 +4,19 @@ mod ai_runtime;
 mod diagnostics;
 mod file_actions;
 mod local_recovery;
+#[cfg(target_os = "macos")]
+mod mac_gui_rollback;
 mod metrics;
 #[cfg(any(target_os = "macos", test))]
 mod network_cli;
 mod setup_check;
 mod setup_plan;
+mod setup_recovery;
 #[cfg(target_os = "macos")]
 mod update_install;
 mod updates;
+#[cfg(any(windows, test))]
+mod windows_gui_rollback;
 #[cfg(any(windows, test))]
 mod windows_proxy_auto;
 use serde::Serialize;
@@ -118,13 +123,25 @@ fn edit<T>(s: &State, f: impl FnOnce(&mut Profile) -> Result<T, String>) -> Resu
     if s.installing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("Выполняется установка обновления.".into());
     }
+    setup_recovery::ensure_resolved(s)?;
     let mut current = s
         .profile
         .lock()
         .map_err(|_| smart_vpn_engine::text("message_312"))?;
-    let mut next = current.clone();
+    let lease = s.vault.lock_configuration()?;
+    let persisted = s.vault.load()?;
+    persisted.validate()?;
+    if smart_vpn_engine::settings::configuration_digest(&persisted)?
+        != smart_vpn_engine::settings::configuration_digest(&current)?
+    {
+        *current = persisted;
+        return Err(
+            "Настройки изменились в другом окне foxVPN. Повторите действие после проверки".into(),
+        );
+    }
+    let mut next = persisted;
     let value = f(&mut next)?;
-    s.vault.save(&next)?;
+    s.vault.save_locked(&next, &lease)?;
     *current = next;
     Ok(value)
 }
@@ -149,7 +166,7 @@ fn snapshot(s: tauri::State<State>) -> Snapshot {
         profile,
         status: s.status.lock().unwrap().clone(),
         proxy_port,
-        core_version: "1.14.2".into(),
+        core_version: "1.14.3-foxVPN.2".into(),
         logs,
         helper_available,
         platform: std::env::consts::OS,
@@ -489,10 +506,18 @@ fn connect_for_ticket(s: &State, ticket: u64, manual: bool) -> Result<u16, Strin
     finish_connect_locked(s, ticket, manual)
 }
 fn finish_connect_locked(s: &State, ticket: u64, manual: bool) -> Result<u16, String> {
+    finish_connect_authorized(s, ticket, manual, None)
+}
+fn finish_connect_authorized(
+    s: &State,
+    ticket: u64,
+    manual: bool,
+    recovery_id: Option<&str>,
+) -> Result<u16, String> {
     if !s.wanted.current(ticket) {
         return Err(smart_vpn_engine::text("connection_cancelled").into());
     }
-    let result = connect_locked(s, ticket);
+    let result = connect_locked(s, ticket, recovery_id);
     if manual {
         if result.is_err() {
             if s.wanted.current(ticket) {
@@ -508,7 +533,8 @@ fn finish_connect_locked(s: &State, ticket: u64, manual: bool) -> Result<u16, St
     }
     result
 }
-fn connect_locked(s: &State, ticket: u64) -> Result<u16, String> {
+fn connect_locked(s: &State, ticket: u64, recovery_id: Option<&str>) -> Result<u16, String> {
+    setup_recovery::ensure_authorized(s, recovery_id)?;
     if s.installing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("Выполняется установка обновления.".into());
     }
@@ -938,6 +964,10 @@ fn write_private(path: &std::path::Path, text: &str) -> Result<(), String> {
         .map_err(|_| smart_vpn_engine::text("message_337").into())
 }
 fn main() {
+    #[cfg(target_os = "macos")]
+    if mac_gui_rollback::run_watchdog_if_requested() {
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--foxvpn-ai-worker") {
         if ai_runtime::worker().is_err() {
             std::process::exit(1);
@@ -985,6 +1015,16 @@ fn main() {
             let app_updates =
                 updates::AppUpdates::new(app.handle()).map_err(std::io::Error::other)?;
             let pending_helper = updates::pending_helper(app.handle(), &app_updates);
+            #[cfg(target_os = "macos")]
+            let gui_update_blocked = mac_gui_rollback::startup(app.handle())
+                .map(|s| s.pending || s.restored || s.failed)
+                .unwrap_or(true);
+            #[cfg(windows)]
+            let gui_update_blocked = windows_gui_rollback::startup(app.handle())
+                .map(|s| s.pending || s.failed)
+                .unwrap_or(true);
+            #[cfg(not(any(target_os = "macos", windows)))]
+            let gui_update_blocked = false;
             app.manage(app_updates);
             let vault = Arc::new(Vault::new("ru.smartvpn.router"));
             let profile = vault.load().map_err(std::io::Error::other)?;
@@ -1154,6 +1194,8 @@ fn main() {
             }
             let handle = app.handle().clone();
             let startup_ticket = if !pending_helper
+                && !gui_update_blocked
+                && !setup_recovery::pending(&state)
                 && profile.settings.auto_connect
                 && startup_plan == ConnectionPlan::Ready
             {
@@ -1250,6 +1292,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             updates::update_state,
+            updates::gui_update_recovery,
+            updates::confirm_app_readiness,
+            updates::acknowledge_gui_recovery,
             updates::update_preferences,
             updates::check_app_update,
             updates::skip_app_update,
@@ -1260,6 +1305,9 @@ fn main() {
             open_windows_proxy_settings,
             diagnostics::connection_diagnostics,
             setup_check::setup_check,
+            setup_recovery::setup_recovery_state,
+            setup_recovery::restore_setup_recovery,
+            setup_recovery::discard_setup_recovery,
             setup_plan::prepare_setup_plan,
             setup_plan::apply_setup_plan,
             setup_plan::undo_setup_plan,

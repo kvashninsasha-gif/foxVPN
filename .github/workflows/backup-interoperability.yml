@@ -1,0 +1,53 @@
+name: Public backup reciprocal interoperability
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['Cargo.*', 'src/**', 'tests/backup_interoperability.rs', 'examples/backup-interoperability.rs', 'tests/fixtures/public-backup-v1.json', '.github/workflows/backup-interoperability.yml']
+permissions:
+  contents: read
+jobs:
+  export:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --features test-support --test backup_interoperability
+      - run: cargo run --locked --features test-support --example backup-interoperability -- export target/public-backup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-backup-${{ matrix.platform }}
+          path: target/public-backup
+          if-no-files-found: error
+  import:
+    needs: export
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            source: windows
+            destination: macos
+          - os: windows-latest
+            source: macos
+            destination: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-backup-${{ matrix.source }}
+          path: target/incoming-backup
+      - run: cargo run --locked --features test-support --example backup-interoperability -- import target/incoming-backup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backup-import-${{ matrix.destination }}
+          path: target/incoming-backup/import-${{ matrix.destination }}.json
+          if-no-files-found: error

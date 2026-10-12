@@ -118,3 +118,13 @@ it('toolbar failure remains visible on pages without an update settings panel',a
  render(<><div id="app-update-actions"/><div id="app-update-feedback"/><Updates ready showSettings={false} blocked={false} onRefresh={refresh}/></>);
  fireEvent.click(await screen.findByRole('button',{name:'Обновления приложения'}));await screen.findByRole('alert');expect(screen.getByText('Нет связи с GitHub')).toBeTruthy();
 });
+
+it('automatic Mac GUI recovery requires its own unchecked consent',async()=>{
+ info.platform='macos';ipc.invoke.mockImplementation(async(c:string)=>{if(c==='update_state')return info;if(c==='check_app_update')return offer;if(c==='install_app_update')return new Promise(()=>{});throw Error(c)});
+ mount();await screen.findByRole('dialog');const consent=screen.getByRole('checkbox',{name:'Разрешить автоматический возврат прежнего приложения'});
+ expect((consent as HTMLInputElement).checked).toBe(false);fireEvent.click(consent);fireEvent.click(screen.getByRole('button',{name:'Обновить',exact:true}));
+ expect(installs()[0][1]).toEqual({version:'0.1.7',approved:true,rollbackApproved:true});
+});
+it('Windows update does not offer Mac GUI recovery consent',async()=>{
+ info.platform='windows';mount();await screen.findByRole('dialog');expect(screen.queryByRole('checkbox',{name:'Разрешить автоматический возврат прежнего приложения'})).toBeNull();
+});

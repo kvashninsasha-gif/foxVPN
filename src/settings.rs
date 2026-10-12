@@ -192,6 +192,143 @@ impl SessionKey {
         Ok(Zeroizing::new(**cached.as_ref().unwrap()))
     }
 }
+const MAX_PRIVATE_PLAIN: usize = 32 * 1024 * 1024;
+const MAX_PRIVATE_FILE: u64 = MAX_PRIVATE_PLAIN as u64 + 32;
+fn check_private_file(metadata: &std::fs::Metadata, max_size: u64) -> Result<(), String> {
+    if !metadata.is_file() || metadata.len() > max_size {
+        return Err("Неверный тип или размер защищённых данных".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o600 {
+            return Err("Защищённые данные имеют неверного владельца или права доступа".into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("Защищённые данные заменены ссылкой".into());
+        }
+    }
+    Ok(())
+}
+fn check_private_parent(path: &std::path::Path) -> Result<(), String> {
+    let parent = path.parent().ok_or("Нет каталога защищённых данных")?;
+    let metadata = match std::fs::symlink_metadata(parent) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Не удалось проверить каталог защищённых данных".into()),
+    };
+    if !metadata.is_dir() {
+        return Err("Каталог защищённых данных отсутствует или заменён ссылкой".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+            return Err(
+                "Каталог защищённых данных имеет неверного владельца или права доступа".into(),
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("Каталог защищённых данных заменён ссылкой".into());
+        }
+    }
+    Ok(())
+}
+fn read_private_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
+    check_private_parent(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("Не удалось открыть защищённые данные".into()),
+    };
+    check_private_file(
+        &file
+            .metadata()
+            .map_err(|_| "Не удалось проверить защищённые данные")?,
+        MAX_PRIVATE_FILE,
+    )?;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.take(MAX_PRIVATE_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Не удалось прочитать защищённые данные")?;
+    if bytes.len() as u64 > MAX_PRIVATE_FILE {
+        return Err("Защищённые данные превышают допустимый размер".into());
+    }
+    Ok(Some(bytes))
+}
+pub struct ConfigurationLock {
+    file: std::fs::File,
+    path: std::path::PathBuf,
+}
+impl ConfigurationLock {
+    fn validate_current(&self) -> Result<(), String> {
+        check_private_parent(&self.path)?;
+        let opened = self
+            .file
+            .metadata()
+            .map_err(|_| "Не удалось проверить блокировку настроек")?;
+        let current = std::fs::symlink_metadata(&self.path)
+            .map_err(|_| "Блокировка настроек исчезла или была заменена")?;
+        check_private_file(&opened, 0)?;
+        check_private_file(&current, 0)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if opened.dev() != current.dev() || opened.ino() != current.ino() {
+                return Err("Блокировка настроек была заменена. Изменения не сохранялись".into());
+            }
+        }
+        // Windows lock handles are opened without delete sharing: replacing the
+        // locked pathname is denied by the kernel until this lease is dropped.
+        Ok(())
+    }
+}
+impl Drop for ConfigurationLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let mut overlapped = unsafe { std::mem::zeroed() };
+            unsafe {
+                windows_sys::Win32::Storage::FileSystem::UnlockFileEx(
+                    self.file.as_raw_handle(),
+                    0,
+                    1,
+                    0,
+                    &mut overlapped,
+                );
+            }
+        }
+    }
+}
 pub struct Vault {
     service: String,
     path: std::path::PathBuf,
@@ -265,26 +402,183 @@ impl Vault {
         }
     }
     pub fn load(&self) -> Result<Profile, String> {
-        if !self.path.exists() {
+        let Some(data) = read_private_file(&self.path)? else {
             return Ok(Profile::default());
+        };
+        if data.len() < 32 || &data[..4] != b"SVP1" {
+            return Err(crate::text("message_301").into());
         }
-        let data = std::fs::read(&self.path).map_err(|_| crate::text("message_300"))?;
         let plain = Zeroizing::new(decrypt_profile(&*self.key(false)?, &data)?);
         serde_json::from_slice(&plain).map_err(|_| crate::text("message_301").into())
     }
-    pub fn save(&self, p: &Profile) -> Result<(), String> {
-        p.validate()?;
-        let plain = Zeroizing::new(serde_json::to_vec(p).map_err(|_| crate::text("message_302"))?);
-        let data = encrypt_profile(&*self.key(true)?, &plain)?;
-        let dir = self.path.parent().ok_or(crate::text("message_303"))?;
-        std::fs::create_dir_all(dir).map_err(|_| crate::text("message_304"))?;
+    pub fn lock_configuration(&self) -> Result<ConfigurationLock, String> {
+        let path = self.path.with_file_name("configuration.lock");
+        let parent = path.parent().ok_or("Нет каталога настроек")?;
+        std::fs::create_dir_all(parent).map_err(|_| "Не удалось создать каталог настроек")?;
+        check_private_parent(&path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| crate::text("message_305"))?;
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
-        let temp = dir.join(format!("profile-{}.tmp", uuid::Uuid::new_v4()));
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x00200000).share_mode(0x1 | 0x2);
+        }
+        let file = options
+            .open(&path)
+            .map_err(|_| "Не удалось получить блокировку настроек")?;
+        let meta = file
+            .metadata()
+            .map_err(|_| "Не удалось проверить блокировку")?;
+        check_private_file(&meta, 0)?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err("Настройки изменяет другое окно foxVPN. Дождитесь завершения".into());
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let mut overlapped = unsafe { std::mem::zeroed() };
+            if unsafe {
+                windows_sys::Win32::Storage::FileSystem::LockFileEx(
+                    file.as_raw_handle(),
+                    3,
+                    0,
+                    1,
+                    0,
+                    &mut overlapped,
+                )
+            } == 0
+            {
+                return Err("Настройки изменяет другое окно foxVPN. Дождитесь завершения".into());
+            }
+        }
+        let lock = ConfigurationLock { file, path };
+        lock.validate_current()?;
+        Ok(lock)
+    }
+    fn setup_recovery_path(&self) -> std::path::PathBuf {
+        self.path.with_file_name("setup-recovery.enc")
+    }
+    pub fn save_setup_recovery(
+        &self,
+        record: &crate::setup_recovery::Record,
+    ) -> Result<(), String> {
+        record.validate()?;
+        let plain = Zeroizing::new(
+            serde_json::to_vec(record).map_err(|_| "Не удалось подготовить журнал настройки")?,
+        );
+        if plain.len() > MAX_PRIVATE_PLAIN {
+            return Err("Журнал настройки превышает допустимый размер".into());
+        }
+        use aes_gcm::aead::Payload;
+        let key = self.key(true)?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&*key).map_err(|_| "Не удалось защитить журнал настройки")?;
+        let mut nonce = [0u8; 12];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let encrypted = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &plain,
+                    aad: b"foxVPN/setup-recovery/v1",
+                },
+            )
+            .map_err(|_| "Не удалось защитить журнал настройки")?;
+        let mut bytes = b"SVR1".to_vec();
+        bytes.extend_from_slice(&nonce);
+        bytes.extend(encrypted);
+        atomic_private_write(&self.setup_recovery_path(), &bytes)
+    }
+    pub fn load_setup_recovery(&self) -> Result<Option<crate::setup_recovery::Record>, String> {
+        let Some(bytes) = read_private_file(&self.setup_recovery_path())? else {
+            return Ok(None);
+        };
+        if bytes.len() < 32 || bytes.len() as u64 > MAX_PRIVATE_FILE || &bytes[..4] != b"SVR1" {
+            return Err("Журнал настройки не прошёл проверку".into());
+        }
+        use aes_gcm::aead::Payload;
+        let key = self.key(false)?;
+        let cipher = Aes256Gcm::new_from_slice(&*key)
+            .map_err(|_| "Не удалось прочитать журнал настройки")?;
+        let plain = Zeroizing::new(
+            cipher
+                .decrypt(
+                    Nonce::from_slice(&bytes[4..16]),
+                    Payload {
+                        msg: &bytes[16..],
+                        aad: b"foxVPN/setup-recovery/v1",
+                    },
+                )
+                .map_err(|_| "Журнал настройки не прошёл проверку целостности")?,
+        );
+        let record: crate::setup_recovery::Record =
+            serde_json::from_slice(&plain).map_err(|_| "Журнал настройки повреждён")?;
+        record.validate()?;
+        Ok(Some(record))
+    }
+    pub fn clear_setup_recovery(&self) -> Result<(), String> {
+        let path = self.setup_recovery_path();
+        match std::fs::remove_file(&path) {
+            Ok(()) => sync_parent(&path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("Не удалось завершить журнал настройки".into()),
+        }
+    }
+    pub fn save(&self, p: &Profile) -> Result<(), String> {
+        let lock = self.lock_configuration()?;
+        self.save_locked(p, &lock)
+    }
+    pub fn save_locked(&self, p: &Profile, lock: &ConfigurationLock) -> Result<(), String> {
+        if lock.path != self.path.with_file_name("configuration.lock") {
+            return Err("Блокировка относится к другому профилю".into());
+        }
+        lock.validate_current()?;
+        p.validate()?;
+        let plain = Zeroizing::new(serde_json::to_vec(p).map_err(|_| crate::text("message_302"))?);
+        if plain.len() > MAX_PRIVATE_PLAIN {
+            return Err("Профиль превышает допустимый размер".into());
+        }
+        let data = encrypt_profile(&*self.key(true)?, &plain)?;
+        lock.validate_current()?;
+        atomic_private_write(&self.path, &data)
+    }
+}
+
+fn sync_parent(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path.parent().ok_or("Нет каталога защищённых данных")?)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| "Не удалось подтвердить запись защищённых данных")?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+fn atomic_private_write(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    let dir = path.parent().ok_or(crate::text("message_303"))?;
+    std::fs::create_dir_all(dir).map_err(|_| crate::text("message_304"))?;
+    check_private_parent(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| crate::text("message_305"))?;
+    }
+    let temp = dir.join(format!("private-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        use std::io::Write;
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -295,8 +589,7 @@ impl Vault {
         let mut file = options
             .open(&temp)
             .map_err(|_| crate::text("message_306"))?;
-        use std::io::Write;
-        file.write_all(&data)
+        file.write_all(data)
             .and_then(|_| file.sync_all())
             .map_err(|_| crate::text("message_306"))?;
         drop(file);
@@ -304,20 +597,23 @@ impl Vault {
         {
             use std::os::windows::ffi::OsStrExt;
             #[link(name = "kernel32")]
-            extern "system" {
+            unsafe extern "system" {
                 fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
             }
             let source: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-            let target: Vec<u16> = self.path.as_os_str().encode_wide().chain(Some(0)).collect();
-            // Replace atomically and flush through the Windows filesystem API.
+            let target: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
             if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 1 | 8) } == 0 {
                 return Err(crate::text("message_302").into());
             }
         }
         #[cfg(not(windows))]
-        std::fs::rename(&temp, &self.path).map_err(|_| crate::text("message_302"))?;
-        Ok(())
+        std::fs::rename(&temp, path).map_err(|_| crate::text("message_302"))?;
+        sync_parent(path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
     }
+    result
 }
 
 #[cfg(test)]

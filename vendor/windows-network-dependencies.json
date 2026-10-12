@@ -1,0 +1,20 @@
+{
+  "upstream_core_version": "1.14.3",
+  "sing_tun_module": "github.com/sagernet/sing-tun",
+  "sing_tun_version": "v0.9.7-0.20261009020158-bca4bf029237",
+  "driver": "Wintun",
+  "version": "0.14.1",
+  "official_page": "https://www.wintun.net/",
+  "official_archive_url": "https://www.wintun.net/builds/wintun-0.14.1.zip",
+  "official_archive_sha256": "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51",
+  "amd64_dll_sha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce",
+  "loading": "sing-tun embeds internal/wintun/amd64/wintun.dll; dll_windows.go loads embedded dllContent with memmod.LoadLibrary",
+  "embedded_files_sha256": {
+    "dll_windows.go": "1a332593019fe17c3d929672cd1e37236c1be88efbafe2cbdcbfcf8e3e615c36",
+    "dll_windows_amd64.go": "2510bebfe4eabfdbeddaeece4ed91b53d84950108af6432b8e1c39cef33d1c83",
+    "amd64/wintun.dll": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
+  },
+  "verification": "Official archive SHA256 matches wintun.net published digest; amd64 DLL compared byte-for-byte with pinned sing-tun module on macOS. This does not execute or accept the Windows driver.",
+  "core_strict_route": "Upstream dynamic WFP session ends with process/session lifetime; persistent crash/boot Kill Switch is not implemented by this service.",
+  "runtime_accepted": false
+}

@@ -1,0 +1,59 @@
+name: Dependency advisory gate
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'apps/desktop/src-tauri/Cargo.toml'
+      - 'apps/desktop/package.json'
+      - 'apps/desktop/package-lock.json'
+      - 'docs/dependency-audit-baseline.json'
+      - 'scripts/audit-dependencies.py'
+      - 'scripts/test-audit-dependencies.py'
+      - '.github/workflows/dependency-audit.yml'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'apps/desktop/src-tauri/Cargo.toml'
+      - 'apps/desktop/package*.json'
+      - 'docs/dependency-audit-baseline.json'
+      - 'scripts/*audit-dependencies.py'
+      - '.github/workflows/dependency-audit.yml'
+permissions:
+  contents: read
+jobs:
+  rust-npm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the pinned RustSec scanner from its locked crates.io release
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Verify npm lockfile installation without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit
+        working-directory: apps/desktop
+      - name: Audit gate policy regressions
+        run: python scripts/test-audit-dependencies.py
+      - name: Fresh RustSec/npm audit with exact dated assessments and all desktop target trees
+        run: python scripts/audit-dependencies.py --report-dir target/dependency-audit
+      - name: Preserve raw advisories, target trees, hashes and evaluated result even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foxVPN-dependency-audit-${{ matrix.os }}
+          path: target/dependency-audit/
+          if-no-files-found: error

@@ -4,6 +4,7 @@ pub mod lifecycle;
 pub mod routing;
 pub mod servers;
 pub mod settings;
+pub mod setup_recovery;
 pub mod statistics;
 pub mod subscriptions;
 pub mod vpn;
@@ -25,3 +26,5 @@ pub mod user_files;
 mod process_lifetime;
 
 pub mod windows_proxy;
+
+pub mod windows_service;

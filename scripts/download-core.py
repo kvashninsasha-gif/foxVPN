@@ -1,31 +1,10 @@
 #!/usr/bin/env python3
-"""Download pinned official sing-box, validate GitHub release SHA256, extract executable."""
-import argparse,hashlib,json,os,platform,pathlib,tarfile,zipfile,io,urllib.request,sys
-# Redirected Windows stdout may default to cp1252 and reject Russian messages.
-for stream in (sys.stdout,sys.stderr):
- if hasattr(stream,"reconfigure"):stream.reconfigure(encoding="utf-8",errors="replace")
-VERSION="1.14.2"
-a=argparse.ArgumentParser();a.add_argument('--platform',choices=['darwin-arm64','darwin-amd64','windows-amd64']);args=a.parse_args()
-name=args.platform or (('windows' if platform.system()=='Windows' else 'darwin')+'-'+('arm64' if platform.machine().lower() in ('arm64','aarch64') else 'amd64'))
-root=pathlib.Path(__file__).resolve().parents[1];suffix='.zip' if name.startswith('windows') else '.tar.gz';filename=f'sing-box-{VERSION}-{name}{suffix}'
-headers={'User-Agent':'SmartVPN-build'}
-# Scoped runner token is sent only to the GitHub API request, never to asset
-# downloads/redirects or logs. Public unauthenticated runner IPs hit rate limits.
-if os.environ.get('GITHUB_TOKEN'):headers['Authorization']='Bearer '+os.environ['GITHUB_TOKEN']
-request=urllib.request.Request(f'https://api.github.com/repos/SagerNet/sing-box/releases/tags/v{VERSION}',headers=headers)
-release=json.load(urllib.request.urlopen(request,timeout=30));asset=next((x for x in release['assets'] if x['name']==filename),None)
-if not asset:raise SystemExit('В официальном релизе нет нужного архива')
-expected=asset.get('digest','')
-if not expected or not expected.startswith('sha256:'):raise SystemExit('Релиз не содержит SHA256. Требуется отдельная проверка поставщика; загрузка остановлена.')
-data=urllib.request.urlopen(asset['browser_download_url'],timeout=60).read();digest=hashlib.sha256(data).hexdigest()
-if expected!='sha256:'+digest:raise SystemExit('SHA256 не совпадает; ядро не установлено')
-if suffix=='.zip':
- with zipfile.ZipFile(io.BytesIO(data)) as archive:
-  key=next(n for n in archive.namelist() if n.endswith('/sing-box.exe'));binary=archive.read(key)
+"""Legacy entry now delegates to audited pinned source; never replaces with stock binary."""
+import argparse,pathlib,subprocess,sys,tempfile
+p=argparse.ArgumentParser();p.add_argument('--platform',choices=['darwin-arm64','darwin-amd64','windows-amd64']);p.add_argument('--work-dir');a=p.parse_args()
+root=pathlib.Path(__file__).resolve().parents[1]
+command=[sys.executable,str(root/'scripts/build-core.py'),'--scan']
+if a.platform:command+=['--platform',a.platform]
+if a.work_dir:subprocess.run(command+['--work-dir',a.work_dir],check=True)
 else:
- with tarfile.open(fileobj=io.BytesIO(data),mode='r:gz') as archive:
-  key=next(m for m in archive.getmembers() if m.name.endswith('/sing-box'));binary=archive.extractfile(key).read()
-path=root/'core'/'sing-box';path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(binary);path.chmod(0o755)
-if name.startswith('windows'):(root/'core'/'sing-box.exe').write_bytes(binary)
-(root/'core'/'version.json').write_text(json.dumps({'version':'v'+VERSION,'platform':name,'archive_sha256':digest,'binary_sha256':hashlib.sha256(binary).hexdigest(),'source':asset['browser_download_url']},indent=2))
-print('Компонент VPN загружен и проверен:',VERSION,name)
+ with tempfile.TemporaryDirectory(prefix='foxvpn-core-') as work:subprocess.run(command+['--work-dir',work],check=True)
