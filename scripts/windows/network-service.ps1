@@ -117,7 +117,7 @@ try {
     }
     if ($created) { Run-Sc -Arguments @('create', $name, 'binPath=', '"C:\Program Files\foxVPN Network\foxvpn-windows-service.exe"', 'start=', 'demand', 'obj=', 'LocalSystem', 'DisplayName=', 'foxVPN Network (experimental transport)') }
     # Only administrators/SYSTEM may reconfigure/start/stop/delete the service.
-    Run-Sc -Arguments @('sdset', $name, 'D:P(A;;GA;;;SY)(A;;GA;;;BA)')
+    Run-Sc -Arguments @('sdset', $name, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;CCLC;;;$OwnerSid)")
     Start-Service -Name $name
     (Get-Service -Name $name).WaitForStatus('Running', [TimeSpan]::FromSeconds(10))
     Start-Sleep -Milliseconds 500

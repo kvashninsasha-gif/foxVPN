@@ -444,7 +444,7 @@ pub fn run_service() -> Result<(), String> {
     Ok(())
 }
 /// GUI/test entry. A malicious pipe server is rejected before writing a profile:
-/// LocalSystem token, fixed path, protected ACL, and pinned binary must all match.
+/// SCM LocalSystem identity, held process, fixed path, protected ACL and pin must match.
 struct ServiceHandle(SC_HANDLE);
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
@@ -522,16 +522,21 @@ fn scm_server(pid: u32) -> Result<(), String> {
 pub fn request(request: &Request) -> Result<Status, String> {
     let (binding, _service_lock) = {
         let mut bytes = Vec::new();
-        trusted_file(&Path::new(SLOT).join("binding.json"))?
+        trusted_file(&Path::new(SLOT).join("binding.json"))
+            .map_err(|e| format!("Service binding file: {e}"))?
             .take(4097)
             .read_to_end(&mut bytes)
             .map_err(|_| fail())?;
         if bytes.len() > 4096 {
             return Err(fail());
         }
-        let binding: Binding = serde_json::from_slice(&bytes).map_err(|_| fail())?;
-        binding.validate()?;
-        let mut lock = trusted_file(&Path::new(SLOT).join("foxvpn-windows-service.exe"))?;
+        let binding: Binding = serde_json::from_slice(&bytes)
+            .map_err(|_| "Invalid service binding JSON".to_string())?;
+        binding
+            .validate()
+            .map_err(|e| format!("Service binding policy: {e}"))?;
+        let mut lock = trusted_file(&Path::new(SLOT).join("foxvpn-windows-service.exe"))
+            .map_err(|e| format!("Service executable ACL: {e}"))?;
         if hash(&mut lock)? != binding.service_sha256 {
             return Err(fail());
         }
@@ -547,7 +552,8 @@ pub fn request(request: &Request) -> Result<Status, String> {
             SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
             std::ptr::null_mut(),
         )
-    })?;
+    })
+    .map_err(|_| format!("Cannot open service pipe: {}", unsafe { GetLastError() }))?;
     let mut pid = 0;
     if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
         return Err(fail());
@@ -585,9 +591,11 @@ pub fn request(request: &Request) -> Result<Status, String> {
     }
     let mut frame = (bytes.len() as u32).to_le_bytes().to_vec();
     frame.extend_from_slice(&bytes);
-    client_transfer(pipe.as_raw_handle(), &mut frame, true, deadline)?;
+    client_transfer(pipe.as_raw_handle(), &mut frame, true, deadline)
+        .map_err(|e| format!("Send service request: {e}"))?;
     let mut prefix = [0u8; 4];
-    client_transfer(pipe.as_raw_handle(), &mut prefix, false, deadline)?;
+    client_transfer(pipe.as_raw_handle(), &mut prefix, false, deadline)
+        .map_err(|e| format!("Read service response: {e}"))?;
     let len = u32::from_le_bytes(prefix) as usize;
     if len == 0 || len > MAX_FRAME {
         return Err(fail());
