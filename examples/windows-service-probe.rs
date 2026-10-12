@@ -14,7 +14,14 @@ fn main() {
         {
             println!("{}", serde_json::to_string(&status).unwrap())
         }
-        _ => std::process::exit(1),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        _ => {
+            eprintln!("Unexpected service capability status");
+            std::process::exit(1);
+        }
     }
 }
 #[cfg(not(windows))]

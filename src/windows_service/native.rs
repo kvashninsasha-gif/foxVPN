@@ -445,6 +445,80 @@ pub fn run_service() -> Result<(), String> {
 }
 /// GUI/test entry. A malicious pipe server is rejected before writing a profile:
 /// LocalSystem token, fixed path, protected ACL, and pinned binary must all match.
+struct ServiceHandle(SC_HANDLE);
+impl Drop for ServiceHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseServiceHandle(self.0);
+        }
+    }
+}
+fn scm_server(pid: u32) -> Result<(), String> {
+    let manager = ServiceHandle(unsafe {
+        OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT)
+    });
+    if manager.0.is_null() {
+        return Err("Service manager identity could not be checked".into());
+    }
+    let service = ServiceHandle(unsafe {
+        OpenServiceW(
+            manager.0,
+            wide(SERVICE_NAME).as_ptr(),
+            SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS,
+        )
+    });
+    if service.0.is_null() {
+        return Err("Service identity could not be checked".into());
+    }
+    let mut status = SERVICE_STATUS_PROCESS::default();
+    let mut size = 0;
+    if unsafe {
+        QueryServiceStatusEx(
+            service.0,
+            SC_STATUS_PROCESS_INFO,
+            (&mut status as *mut SERVICE_STATUS_PROCESS).cast(),
+            std::mem::size_of_val(&status) as u32,
+            &mut size,
+        )
+    } == 0
+        || status.dwCurrentState != SERVICE_RUNNING
+        || status.dwProcessId != pid
+        || status.dwServiceType != SERVICE_WIN32_OWN_PROCESS
+    {
+        return Err(fail());
+    }
+    size = 0;
+    unsafe {
+        QueryServiceConfigW(service.0, std::ptr::null_mut(), 0, &mut size);
+    }
+    if size < std::mem::size_of::<QUERY_SERVICE_CONFIGW>() as u32 || size > 8192 {
+        return Err(fail());
+    }
+    let mut bytes = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+    if unsafe { QueryServiceConfigW(service.0, bytes.as_mut_ptr().cast(), size, &mut size) } == 0 {
+        return Err(fail());
+    }
+    let config = unsafe { &*bytes.as_ptr().cast::<QUERY_SERVICE_CONFIGW>() };
+    let read = |ptr: *const u16| -> Result<String, String> {
+        let start = bytes.as_ptr() as usize;
+        let end = start + bytes.len() * std::mem::size_of::<usize>();
+        let address = ptr as usize;
+        if address < start || address >= end || address % 2 != 0 {
+            return Err(fail());
+        }
+        let data = unsafe { std::slice::from_raw_parts(ptr, (end - address) / 2) };
+        let length = data.iter().position(|c| *c == 0).ok_or_else(fail)?;
+        String::from_utf16(&data[..length]).map_err(|_| fail())
+    };
+    if config.dwServiceType != SERVICE_WIN32_OWN_PROCESS
+        || !read(config.lpServiceStartName)?.eq_ignore_ascii_case("LocalSystem")
+        || !read(config.lpBinaryPathName)?
+            .eq_ignore_ascii_case(&format!("\"{SLOT}\\foxvpn-windows-service.exe\""))
+    {
+        return Err(fail());
+    }
+    Ok(())
+}
 pub fn request(request: &Request) -> Result<Status, String> {
     let (binding, _service_lock) = {
         let mut bytes = Vec::new();
@@ -478,9 +552,16 @@ pub fn request(request: &Request) -> Result<Status, String> {
     if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
         return Err(fail());
     }
-    let process =
-        handle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) })?;
-    if process_sid(process.as_raw_handle())? != "S-1-5-18" {
+    // Nonadministrators cannot query a LocalSystem process token. Bind the
+    // pipe PID to SCM's running LocalSystem own-process service and exact path.
+    // Query-only process handle retains identity without requesting extra rights.
+    scm_server(pid)?;
+    let process = handle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })
+        .map_err(|_| "Cannot inspect service process identity".to_string())?;
+    let mut exit = 0;
+    if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut exit) } == 0
+        || exit != STILL_ACTIVE as u32
+    {
         return Err(fail());
     }
     let mut image = [0u16; 32768];
