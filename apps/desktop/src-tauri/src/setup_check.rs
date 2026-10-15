@@ -19,6 +19,7 @@ pub struct Candidate {
 #[derive(Clone, Serialize)]
 pub struct Report {
     pub(crate) items: Vec<Item>,
+    pub(crate) healthy: bool,
     pub(crate) action: &'static str,
     selected: Option<String>,
     pub(crate) recommendation: Option<Candidate>,
@@ -69,6 +70,38 @@ fn item(items: &mut Vec<Item>, label: &'static str, ok: bool, message: impl Into
         message: message.into(),
     });
 }
+fn confirmed_healthy(
+    status: &str,
+    changed: bool,
+    action: &str,
+    system_vpn: bool,
+    items: &[Item],
+) -> bool {
+    let passed = |label: &str| items.iter().any(|item| item.label == label && item.ok);
+    status == "connected"
+        && !changed
+        && action == "none"
+        && passed("Текущее соединение")
+        && (!system_vpn || (passed("Системный DNS") && passed("Интернет через систему")))
+        && items.iter().all(|item| item.ok)
+}
+fn probe_system_connection() -> bool {
+    // Respect OS DNS/routes while refusing an environment/application proxy;
+    // otherwise a working SOCKS port could conceal a broken system tunnel.
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .ok()
+        .and_then(|client| {
+            client
+                .get("https://www.gstatic.com/generate_204")
+                .send()
+                .ok()
+        })
+        .is_some_and(|response| response.status().as_u16() == 204)
+}
 #[cfg(any(windows, test))]
 fn manual_proxy_is_unambiguous(matches: bool, flags: Option<u32>) -> bool {
     matches && flags.is_some_and(|v| v & (4 | 8) == 0)
@@ -84,7 +117,8 @@ pub async fn setup_check(
         let initial_stamp = super::ai::stamp(&state)?;
         let profile = state.profile.lock().map_err(|_| "Не удалось прочитать настройки")?.clone();
         let ticket = state.wanted.ticket();
-        let active = state.status.lock().map_err(|_| "Не удалось прочитать состояние")?.as_str() != "disconnected";
+        let initial_status = state.status.lock().map_err(|_| "Не удалось прочитать состояние")?.clone();
+        let active = initial_status != "disconnected";
         let current = state.core.lock().map_err(|_| "Не удалось прочитать подключение")?
             .as_ref().map(|c| (c.proxy_port, c.secret.clone()));
         let mut items = vec![];
@@ -101,10 +135,15 @@ pub async fn setup_check(
                     network_helper::Probe::Starting => "Компонент запускается. Повторите проверку позднее",
                 });
             if profile.settings.tun && helper == network_helper::Probe::Ready && active {
-                if let Ok(response) = network_helper::request(&network_helper::Request::Status) {
-                    item(&mut items, "Системный DNS", response.status.dns_active,
-                        if response.status.dns_active { "Компонент сообщает, что системный DNS настроен" }
-                        else { "Компонент не подтверждает активный системный DNS. Проверьте настройки" });
+                match network_helper::request(&network_helper::Request::Status) {
+                    Ok(response) => {
+                        let ready = diagnostics::confirmed_remote_start(&response.status, profile.settings.proxy_port);
+                        item(&mut items, "Системный DNS", ready,
+                            if ready { "Компонент подтверждает работу туннеля и системного DNS" }
+                            else { "Компонент не подтверждает работу туннеля и системного DNS. Повторите проверку" });
+                    }
+                    Err(_) => item(&mut items, "Системный DNS", false,
+                        "Не удалось проверить туннель и системный DNS. Повторите проверку"),
                 }
             }
         }
@@ -121,6 +160,13 @@ pub async fn setup_check(
             item(&mut items, "Текущее соединение", healthy, if healthy {
                 "Контрольный HTTPS-запрос через текущий локальный порт прошёл. Подключение не прерывалось"
             } else { "Контрольный запрос не прошёл или состояние неизвестно. Переподключение не выполнялось" });
+            if cfg!(target_os = "macos") && profile.settings.tun {
+                let _ = app.emit("setup-check-progress", "Проверяем интернет через системное соединение…");
+                let system_ok = probe_system_connection();
+                item(&mut items, "Интернет через систему", system_ok,
+                    if system_ok { "HTTPS-запрос через системные DNS и маршруты прошёл" }
+                    else { "HTTPS-запрос через системные DNS и маршруты не прошёл. Настройки не менялись" });
+            }
         } else if core && profile.settings.mode == smart_vpn_engine::routing::Mode::Direct {
             healthy = latency::probe_without_proxy().unwrap_or(false);
             item(&mut items, "Режим напрямую", healthy, "Контрольный HTTPS-запрос без локального прокси. Маршруты ОС сохраняются; VPN-серверы не проверялись");
@@ -178,7 +224,9 @@ pub async fn setup_check(
         let server = latest.servers.iter().any(|s| Some(&s.id) == latest.selected.as_ref());
         let next = if changed { "none" } else { action(core, server, active, profile.settings.tun, helper,
             cfg!(windows), proxy_matches, healthy) };
-        let report = Report { items, action: next, selected: latest.selected, recommendation, tested,
+        let healthy = confirmed_healthy(&initial_status, changed, next,
+            cfg!(target_os = "macos") && profile.settings.tun, &items);
+        let report = Report { items, healthy, action: next, selected: latest.selected, recommendation, tested,
             total: profile.servers.len(), changed, check_id: if changed { String::new() } else { uuid::Uuid::new_v4().to_string() }, verified: successes };
         if !changed {
             super::ai::remember(&app, &report, initial_stamp.clone())?;
@@ -195,6 +243,7 @@ pub(crate) fn private_fixture_report() -> Report {
             ok: true,
             message: "PRIVATE_TOKEN PRIVATE_URI".into(),
         }],
+        healthy: false,
         action: "connect",
         selected: Some("PRIVATE_SERVER_ID".into()),
         recommendation: Some(Candidate {
@@ -213,6 +262,46 @@ pub(crate) fn private_fixture_report() -> Report {
 mod tests {
     use super::*;
     use network_helper::Probe::*;
+    #[test]
+    fn healthy_requires_a_fresh_verified_active_connection_and_no_failed_checks() {
+        let mut items = vec![];
+        item(&mut items, "Компонент VPN", true, "fixture");
+        assert!(!confirmed_healthy(
+            "connected",
+            false,
+            "none",
+            false,
+            &items
+        ));
+        item(&mut items, "Текущее соединение", true, "fixture");
+        assert!(confirmed_healthy("connected", false, "none", false, &items));
+        for status in ["disconnected", "connecting", "reconnecting", "unknown"] {
+            assert!(!confirmed_healthy(status, false, "none", false, &items));
+        }
+        assert!(!confirmed_healthy("connected", true, "none", false, &items));
+        assert!(!confirmed_healthy(
+            "connected",
+            false,
+            "windows_proxy",
+            false,
+            &items
+        ));
+        assert!(!confirmed_healthy("connected", false, "none", true, &items));
+        item(&mut items, "Системный DNS", true, "fixture");
+        assert!(!confirmed_healthy("connected", false, "none", true, &items));
+        item(&mut items, "Интернет через систему", false, "fixture");
+        assert!(!confirmed_healthy("connected", false, "none", true, &items));
+        items.last_mut().unwrap().ok = true;
+        assert!(confirmed_healthy("connected", false, "none", true, &items));
+        item(&mut items, "Системный DNS", false, "fixture");
+        assert!(!confirmed_healthy(
+            "connected",
+            false,
+            "none",
+            false,
+            &items
+        ));
+    }
     #[test]
     fn pac_and_auto_detection_do_not_count_as_confirmed_manual_proxy() {
         assert!(manual_proxy_is_unambiguous(true, Some(3)));

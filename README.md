@@ -87,7 +87,7 @@ Windows x64 NSIS собран и проверен в GitHub runner; пользо
 
 ## Сборка
 
-Требуется Rust stable, Node.js 22+, macOS Command Line Tools и Go 1.25.5 для TUN-ядра, либо Windows MSVC Build Tools и WebView2. Windows системный компонент в этой версии отсутствует.
+Требуется Rust stable, Node.js 22+, macOS Command Line Tools и Go 1.26.9 для закреплённой сборки ядра, либо Windows MSVC Build Tools и WebView2. Windows системный компонент в этой версии отсутствует.
 
 ```sh
 python3 scripts/download-core.py
@@ -103,7 +103,7 @@ cd ../..
 python3 scripts/seal-macos-bundle.py "target/release/bundle/macos/foxVPN.app"
 ```
 
-На macOS ARM64 готовая `.app` находится в `target/release/bundle/macos/`, на Windows установщик NSIS — в `target/release/bundle/nsis/`. Ядро скачивается отдельно для выбранной ОС с проверкой SHA256 по метаданным официального релиза; при отсутствии опубликованного digest загрузка останавливается.
+На macOS ARM64 готовая `.app` находится в `target/release/bundle/macos/`, на Windows установщик NSIS — в `target/release/bundle/nsis/`. Ядро собирается для выбранной ОС из закреплённых GPL-исходников sing-box с проверкой SHA256 архива и overlay зависимостей. Релизный pipeline дополнительно проверяет базу уязвимостей и фактический запуск упакованного ядра.
 
 ```sh
 # Корневые тесты; SMARTVPN_TEST_CORE обязателен для реальных проверок ядра

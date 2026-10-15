@@ -93,3 +93,14 @@ it('completed application hides cancellation while refreshing the diagnostic rep
  expect(screen.getByRole('button',{name:'Вернуть прежние настройки'}).hasAttribute('disabled')).toBe(true);finish();
  await waitFor(()=>expect(screen.getByRole('button',{name:'Вернуть прежние настройки'}).hasAttribute('disabled')).toBe(false));
 });
+it('does not expose a late plan prepared for a previous diagnostic report',async()=>{
+ let resolve!:(value:unknown)=>void;
+ ipc.invoke.mockImplementation(async(command:string)=>command==='snapshot'?{platform:'windows'}:new Promise(value=>{resolve=value}));
+ const view=render(<ConfigurationAssistant report={report} onDone={vi.fn(async()=>{})}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Подготовить план настройки'}));
+ await waitFor(()=>expect(resolve).toBeDefined());
+ view.rerender(<ConfigurationAssistant report={{...report,check_id:'newer-check'}} onDone={vi.fn(async()=>{})}/>);
+ resolve({...plan,changes:['Устаревшее изменение']});
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Подготовить план настройки'}).hasAttribute('disabled')).toBe(false));
+ expect(screen.queryByText('Устаревшее изменение')).toBeNull();expect(screen.queryByRole('button',{name:'Применить план'})).toBeNull();
+});

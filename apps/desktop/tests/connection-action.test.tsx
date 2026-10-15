@@ -1,0 +1,21 @@
+import {afterEach,it,expect,vi} from 'vitest';
+import {renderHook,act,cleanup} from '@testing-library/react';
+import {useConnectionAction} from '../src/connectionAction';
+afterEach(()=>{cleanup();vi.useRealTimers()});
+it('updates elapsed wait time without another IPC and keeps cancellation locked until both acknowledgements',async()=>{
+ vi.useFakeTimers();let resolveConnect!:()=>void,resolveStop!:()=>void;
+ const connect=vi.fn(()=>new Promise<void>(resolve=>{resolveConnect=resolve}));
+ const stop=vi.fn(()=>new Promise<void>(resolve=>{resolveStop=resolve})),refresh=vi.fn(async()=>{}),onError=vi.fn();
+ const {result}=renderHook(()=>useConnectionAction({stop,refresh,onError}));
+ let connecting!:Promise<void>,stopping!:Promise<void>;
+ act(()=>{connecting=result.current.start(connect)});
+ act(()=>vi.advanceTimersByTime(31_000));
+ expect(result.current.elapsed).toBe(31);expect(result.current.phase).toBe('connecting');expect(connect).toHaveBeenCalledTimes(1);
+ act(()=>{stopping=result.current.disconnect()});
+ expect(stop).toHaveBeenCalledTimes(1);expect(result.current.phase).toBe('cancelling');
+ await act(async()=>{resolveStop();await stopping});
+ expect(result.current.phase).toBe('cancelling');expect(result.current.pending()).toBe(true);
+ await act(async()=>{resolveConnect();await connecting});
+ expect(result.current.phase).toBeNull();expect(result.current.pending()).toBe(false);expect(onError).not.toHaveBeenCalled();
+ expect(refresh).toHaveBeenCalledTimes(1);
+});

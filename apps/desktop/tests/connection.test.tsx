@@ -1,6 +1,6 @@
 import React from 'react';
 import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
-import {render,screen,fireEvent,waitFor,cleanup} from '@testing-library/react';
+import {render,screen,fireEvent,waitFor,cleanup,act} from '@testing-library/react';
 const ipc=vi.hoisted(()=>({invoke:vi.fn(),listen:vi.fn(async()=>()=>{}),enabled:vi.fn(async()=>false)}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:ipc.invoke}));
 vi.mock('@tauri-apps/api/event',()=>({listen:ipc.listen}));
@@ -12,7 +12,7 @@ import ru from '../../../locales/ru.json';
 import type {Snapshot} from '../src/types';
 let snapshot:Snapshot;
 function fixture():Snapshot{return{status:'disconnected',proxy_port:null,core_version:'1.14.2',connection_plan:'needs_proxy_consent',logs:[],profile:{version:1,selected:'test',subscriptions:[],rules:[],servers:[{id:'test',name:'Тестовый сервер',address:'example.com',port:443,uuid:'public-test-fixture',transport:'tcp',security:'tls',params:{},favorite:false,group:'Основные',subscription:null,latency_ms:88,download_mbps:16.4,status:'available',successes:1,failures:0,last_error:null}],settings:{mode:'smart',tun:true,kill_switch:true,proxy_acknowledged:false,proxy_port:2080,dns_protection:true,dns_provider:'cloudflare',dns_transport:'https',auto_connect:false,start_minimized:false,restore:true,health_interval:30,failover:true,favorites_only:false,strategy:'balanced',subscription_interval:21600}}}}
-beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{});ipc.invoke.mockReset();ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='snapshot')return structuredClone(snapshot);if(command==='prepare_proxy'){snapshot.profile.settings.tun=false;snapshot.profile.settings.kill_switch=false;snapshot.profile.settings.proxy_acknowledged=true;if(args?.windowsProxyAuto!==undefined)snapshot.profile.settings.windows_proxy_auto=args.windowsProxyAuto;snapshot.connection_plan='ready';return;}if(command==='connect'){snapshot.status='connected';snapshot.proxy_port=2080;return 2080;}throw new Error('Unexpected command '+command);});});
+beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{});ipc.invoke.mockReset();ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='snapshot')return structuredClone(snapshot);if(command==='confirm_app_readiness')return;if(command==='prepare_proxy'){snapshot.profile.settings.tun=false;snapshot.profile.settings.kill_switch=false;snapshot.profile.settings.proxy_acknowledged=true;if(args?.windowsProxyAuto!==undefined)snapshot.profile.settings.windows_proxy_auto=args.windowsProxyAuto;snapshot.connection_plan='ready';return;}if(command==='connect'){snapshot.status='connected';snapshot.proxy_port=2080;return 2080;}throw new Error('Unexpected command '+command);});});
 afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
@@ -23,20 +23,25 @@ describe('connection setup regression',()=>{
    if(command==='ai_state')return {model:'Qwen3-0.6B',available:true,phase:'idle',downloaded:639446688,total:639446688};
    if(command==='setup_check')return {items:[{label:'Прокси Windows',ok:false,message:'Проверка завершена'}],action:'windows_proxy',selected:'test',recommendation:null,tested:0,total:1,changed:false,check_id:'windows-backend-check'};
    if(command==='ai_explain')return {text:'Параметры прокси требуют проверки.',advice:'Настройте Windows проверенной кнопкой.',elapsed_ms:50};
+   if(command==='prepare_setup_plan')return {id:'windows-plan',changes:['Включить автоматическую настройку прокси Windows'],steps:['Переподключить и проверить'],blockers:[],reconnect:true};
    return original(command,args);
   });
   await ready();
-  const explain=await screen.findByRole('button',{name:'Объяснить результаты с ИИ'});
-  expect(explain.hasAttribute('disabled')).toBe(true);
+  expect(screen.queryByRole('button',{name:'Объяснить результаты с ИИ'})).toBeNull();
+  expect(ipc.invoke.mock.calls.some(([c])=>c==='ai_state')).toBe(false);
   fireEvent.click(screen.getByRole('button',{name:'Проверить и настроить'}));
-  await waitFor(()=>expect(explain.hasAttribute('disabled')).toBe(false));
+  const explain=await screen.findByRole('button',{name:'Объяснить результаты с ИИ'});
+  expect(explain.hasAttribute('disabled')).toBe(false);
   fireEvent.click(explain);await screen.findByText('Параметры прокси требуют проверки.');
   expect(ipc.invoke).toHaveBeenCalledWith('ai_explain',{checkId:'windows-backend-check'});
   expect(ipc.invoke.mock.calls.some(([c])=>['stop','connect','prepare_proxy','install_network_helper'].includes(c))).toBe(false);
   expect(snapshot.status).toBe('connected');
   expect(screen.queryByRole('button',{name:'Установить или обновить компонент macOS'})).toBeNull();
-  fireEvent.click(screen.getByRole('button',{name:'Настроить Windows автоматически'}));
-  expect(screen.getByRole('dialog',{name:'Подтверждение настройки'})).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Подготовить план настройки'}));
+  await screen.findByText('План настройки');
+  expect(screen.getByText('Включить автоматическую настройку прокси Windows')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Применить план'}));
+  expect(screen.getByRole('dialog',{name:'Подтверждение плана настройки'})).toBeTruthy();
   expect(ipc.invoke.mock.calls.some(([c])=>c==='prepare_proxy')).toBe(false);
   fireEvent.click(screen.getByRole('button',{name:'Отмена'}));
   expect(snapshot.status).toBe('connected');
@@ -46,9 +51,10 @@ describe('connection setup regression',()=>{
   ipc.invoke.mockImplementation(async(command:string,args:any)=>{
    if(command==='ai_state')return {model:'Qwen3-0.6B',available,phase:'idle',downloaded:0,total:639446688};
    if(command==='ai_download'){available=true;return;}
+   if(command==='setup_check')return {items:[{label:'Текущее соединение',ok:false,message:'Не подключено'}],action:'connect',selected:'test',recommendation:null,tested:1,total:1,changed:false,check_id:'download-check'};
    return original(command,args);
   });
-  await ready();fireEvent.click(await screen.findByRole('button',{name:'Скачать ИИ-помощника'}));
+  await ready();expect(screen.queryByRole('button',{name:'Скачать ИИ-помощника'})).toBeNull();fireEvent.click(screen.getByRole('button',{name:'Проверить и настроить'}));fireEvent.click(await screen.findByRole('button',{name:'Скачать ИИ-помощника'}));
   expect(screen.getByRole('dialog',{name:'Загрузка ИИ-помощника'})).toBeTruthy();
   expect(ipc.invoke.mock.calls.some(([c])=>c==='ai_download')).toBe(false);
   fireEvent.click(screen.getByRole('button',{name:'Не сейчас'}));
@@ -193,4 +199,94 @@ it('a Windows profile imported from Mac never presents local proxy as whole-comp
  snapshot.platform='windows';snapshot.status='connected';snapshot.proxy_port=2080;snapshot.connection_plan='ready';snapshot.profile.settings.tun=true;
  await ready();expect(screen.queryByText(ru.tun_scope)).toBeNull();await screen.findByText('127.0.0.1:2080');
  expect(screen.getAllByText(ru.windows_proxy_scope).length).toBeGreaterThan(0);
+});
+
+function deferred<T=void>(){let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no});return{promise,resolve,reject}}
+describe('pending connection controls',()=>{
+ it('shows progress immediately, keeps navigation responsive, and sends stop before connect resolves',async()=>{
+  snapshot.connection_plan='ready';snapshot.helper_available=true;
+  const connect=deferred<number>(),stop=deferred();const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation((command:string,args:any)=>command==='connect'?connect.promise:command==='stop'?stop.promise:original(command,args));
+  await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));
+  expect(screen.getByText(/Подключаемся · 0 с/)).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Отменить подключение'}).hasAttribute('disabled')).toBe(false);
+  fireEvent.click(screen.getAllByRole('button',{name:'Настройки',exact:true})[0]);
+  expect(screen.getByRole('button',{name:'Проверить сборку'})).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Отменить подключение'}));
+  expect(ipc.invoke.mock.calls.filter(([command])=>command==='stop')).toHaveLength(1);
+  expect(screen.getByText(/Отменяем подключение ·/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Обзор',exact:true}));
+  expect(screen.getByRole('button',{name:'Отменяем…'}).hasAttribute('disabled')).toBe(true);
+  await act(async()=>{stop.resolve();await stop.promise});
+  expect(screen.getByRole('button',{name:'Отменяем…'}).hasAttribute('disabled')).toBe(true);
+  const snapshotsAfterStop=ipc.invoke.mock.calls.filter(([command])=>command==='snapshot').length;
+  await act(async()=>{connect.resolve(2080);await connect.promise});
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Подключиться',exact:true}).hasAttribute('disabled')).toBe(false));
+  expect(ipc.invoke.mock.calls.filter(([command])=>command==='snapshot')).toHaveLength(snapshotsAfterStop);
+  expect(ipc.invoke.mock.calls.filter(([command])=>command==='connect')).toHaveLength(1);
+  expect(screen.queryByText(/Ожидаем подтверждения остановки/)).toBeNull();
+ });
+ it('does not duplicate a pending connect or surface its late cancellation error',async()=>{
+  snapshot.connection_plan='ready';const connect=deferred<number>(),stop=deferred();const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation((command:string,args:any)=>command==='connect'?connect.promise:command==='stop'?stop.promise:original(command,args));
+  await ready();const button=screen.getByRole('button',{name:'Подключиться',exact:true});
+  fireEvent.click(button);fireEvent.click(button); // The second action is cancellation, never another connect.
+  expect(ipc.invoke.mock.calls.filter(([command])=>command==='connect')).toHaveLength(1);
+  expect(ipc.invoke.mock.calls.filter(([command])=>command==='stop')).toHaveLength(1);
+  await act(async()=>{connect.reject(new Error('Поздняя ошибка отменённого подключения'));stop.resolve();await Promise.resolve()});
+  await screen.findByRole('button',{name:'Подключиться',exact:true});
+  expect(screen.queryByText('Поздняя ошибка отменённого подключения')).toBeNull();
+ });
+ it('keeps unknown state and reports an unconfirmed stop instead of claiming cancellation succeeded',async()=>{
+  snapshot.connection_plan='ready';let update:((event:{payload:string})=>void)|undefined;
+  ipc.listen.mockImplementation(async(event:string,callback:any)=>{if(event==='servers-updated')update=callback;return()=>{}});
+  const connect=deferred<number>(),stop=deferred();const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation((command:string,args:any)=>command==='connect'?connect.promise:command==='stop'?stop.promise:original(command,args));
+  await ready();await waitFor(()=>expect(update).toBeDefined());
+  fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));
+  snapshot.status='unknown';await act(async()=>{update!({payload:''});await Promise.resolve()});
+  fireEvent.click(screen.getByRole('button',{name:'Отменить подключение'}));
+  expect(ipc.invoke.mock.calls.filter(([command])=>command==='stop')).toHaveLength(1);
+  await act(async()=>{stop.reject(new Error('Остановка VPN не подтверждена'));await Promise.resolve()});
+  await screen.findByText('Остановка VPN не подтверждена');
+  expect(screen.getByRole('button',{name:'Отменяем…'}).hasAttribute('disabled')).toBe(true);
+  await act(async()=>{connect.resolve(2080);await connect.promise});
+  await screen.findByRole('button',{name:'Отключиться',exact:true});
+  expect(screen.getAllByText('Состояние VPN неизвестно').length).toBeGreaterThan(0);
+  expect(screen.queryByText('Отключено')).toBeNull();
+  expect(screen.getByText('Остановка VPN не подтверждена')).toBeTruthy();
+ });
+ it('cancels consented proxy preparation without starting a later tunnel',async()=>{
+  snapshot.platform='windows';const prepare=deferred(),stop=deferred();const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation((command:string,args:any)=>command==='prepare_proxy'?prepare.promise:command==='stop'?stop.promise:original(command,args));
+  await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));
+  fireEvent.click(screen.getByRole('button',{name:'Подключить и настроить Windows',exact:true}));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Отменить подключение'}));
+  await act(async()=>{stop.resolve();prepare.resolve();await Promise.resolve()});
+  await screen.findByRole('button',{name:'Подключиться',exact:true});
+  expect(ipc.invoke.mock.calls.some(([command])=>command==='connect')).toBe(false);
+  expect(ipc.invoke.mock.calls.filter(([command])=>command==='stop')).toHaveLength(1);
+ });
+});
+
+it('ignores a connect snapshot already in flight when cancellation confirms first',async()=>{
+ snapshot.connection_plan='ready';const connect=deferred<number>(),lateSnapshot=deferred<Snapshot>();
+ let connectedReply=false,stopped=false;const original=ipc.invoke.getMockImplementation()!;
+ ipc.invoke.mockImplementation((command:string,args:any)=>{
+  if(command==='connect')return connect.promise.then(value=>{connectedReply=true;return value});
+  if(command==='stop'){stopped=true;return Promise.resolve()}
+  if(command==='snapshot'&&connectedReply&&!stopped)return lateSnapshot.promise;
+  return original(command,args);
+ });
+ await ready();fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));
+ await act(async()=>{connect.resolve(2080);await connect.promise});
+ expect(connectedReply).toBe(true);
+ fireEvent.click(screen.getByRole('button',{name:'Отменить подключение'}));
+ await waitFor(()=>expect(stopped).toBe(true));
+ const stale=structuredClone(snapshot);stale.status='connected';stale.proxy_port=2080;
+ await act(async()=>{lateSnapshot.resolve(stale);await lateSnapshot.promise});
+ await screen.findByRole('button',{name:'Подключиться',exact:true});
+ expect(screen.queryByRole('button',{name:'Отключиться',exact:true})).toBeNull();
+ expect(screen.queryByText('127.0.0.1:2080')).toBeNull();
 });

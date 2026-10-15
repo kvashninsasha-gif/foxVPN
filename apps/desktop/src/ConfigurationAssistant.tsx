@@ -30,13 +30,13 @@ export function ConfigurationAssistant({report,locked=false,onDone,session}:{rep
  const {result,setResult,phase,setPhase,message,setMessage,operationId,setOperationId}=session??localSession;
  const busy=phase!==null;
  const [confirm,setConfirm]=useState<'apply'|'undo'|null>(null);
- const initialized=useRef(false);
+ const initialized=useRef(false),reportGeneration=useRef(0);
  useEffect(()=>{let alive=true;void invoke<Snapshot>('snapshot').then(s=>{if(alive){setPlatform(s.platform??'macos');setCurrentTun(s.profile?.settings.tun??true);if(!initialized.current){initialized.current=true;if(s.platform==='windows')setPatch(p=>({windows_proxy_auto:true,...p}))}}}).catch(()=>{});return()=>{alive=false}},[report?.check_id]);
- useEffect(()=>{setPlan(null);setConfirm(null)},[report?.check_id]);
+ useEffect(()=>{reportGeneration.current++;setPlan(null);setConfirm(null);return()=>{reportGeneration.current++}},[report?.check_id,report?.changed]);
  function change(key:keyof Settings,value:unknown){setPatch(p=>{const next={...p};if(value===undefined)delete next[key];else (next as Record<string,unknown>)[key]=value;return next});setPlan(null)}
- async function prepare(){if(!report?.check_id)return;setPhase('preview');setMessage('');try{
+ async function prepare(){if(!report?.check_id||report.changed||locked||busy)return;const generation=reportGeneration.current;setPhase('preview');setMessage('');try{
   const customRules=replaceRules?rules.split('\n').filter(v=>v.trim()).map(line=>{const [domain,route,...rest]=line.trim().split(/\s+/);if(!domain||!['vpn','direct'].includes(route)||rest.length)throw new Error('Правило: домен и маршрут vpn или direct');return {domain,route}}):undefined;
-  setPlan(await invoke<Plan>('prepare_setup_plan',{checkId:report.check_id,options:{patch,rules:customRules,select_recommended:selectRecommended,connect_after:connectAfter}}));
+  const value=await invoke<Plan>('prepare_setup_plan',{checkId:report.check_id,options:{patch,rules:customRules,select_recommended:selectRecommended,connect_after:connectAfter}});if(generation===reportGeneration.current)setPlan(value);
  }catch(e){setMessage(String(e))}finally{setOperationId(null);setPhase(null)}}
  async function apply(){if(!plan)return;setConfirm(null);setOperationId(plan.id);setPhase('apply');setMessage('');try{
   const value=await invoke<Outcome>('apply_setup_plan',{planId:plan.id,approved:true});setResult(value);setPlan(null);setMessage(value.message);setPhase('checking');await onDone();
@@ -48,7 +48,8 @@ export function ConfigurationAssistant({report,locked=false,onDone,session}:{rep
  const systemScope=platform==='macos'&&(patch.tun??currentTun);
  async function cancel(){try{await invoke('cancel_setup_plan',{operationId});setMessage('Запрошена отмена. Дождитесь остановки и возврата настроек.')}catch(e){setMessage(String(e))}}
  return <div className="configuration-assistant">
-  <h4>Настроить подключение с помощником</h4><p className="footnote">Помощник подготовит конкретный план по результатам проверки. После вашего подтверждения foxVPN применит параметры и проверит подключение. При ошибке попробует вернуть прежние настройки. Модель объясняет диагностику; команды выполняет проверенный код приложения.</p>
+  <h4>План исправления</h4><p className="footnote">Сначала foxVPN покажет, что изменит. После вашего подтверждения применит план и проверит подключение. При ошибке попробует вернуть прежние настройки.</p>
+  <details><summary>Выбрать другие параметры</summary>
   <label>Что настроить<select aria-label="Цель настройки" disabled={disabled} defaultValue="repair" onChange={e=>{const presets:Record<string,Patch>={repair:{},smart:{mode:'smart'},vpn:{mode:'vpn',dns_protection:true,dns_transport:'https'},latency:{strategy:'latency'},stability:{strategy:'stability',restore:true,failover:true}};const preset=presets[e.target.value];setPatch(previous=>({...preset,...(platform==='windows'?{windows_proxy_auto:previous.windows_proxy_auto??true}:{}),...(previous.tun!==undefined?{tun:previous.tun}:{}),...(previous.kill_switch!==undefined?{kill_switch:previous.kill_switch}:{})}));setPlan(null)}}><option value="repair">Исправить подключение</option><option value="smart">Российские сайты напрямую, остальные через VPN</option><option value="vpn">{systemScope?'Весь трафик Mac через VPN':'Трафик приложений с поддержкой прокси через VPN'}</option><option value="latency">Подобрать сервер с меньшей задержкой</option><option value="stability">Настроить стабильное соединение</option></select></label>
   {platform==='macos'&&<><label>Охват подключения<select aria-label="Охват подключения" disabled={disabled} value={patch.tun===undefined?'':patch.tun?'system':'proxy'} onChange={e=>change('tun',e.target.value===''?undefined:e.target.value==='system')}><option value="">Сохранить: {currentTun?'системный VPN':'локальный прокси'}</option><option value="system">Системный VPN всего Mac</option><option value="proxy">Локальный прокси для настроенных приложений</option></select></label><p className="footnote">При переходе с системного VPN на прокси отдельно выберите отключение защиты при обрыве. Все изменения появятся в плане. Для системного VPN нужен сетевой компонент.</p></>}
   <label><input type="checkbox" checked={selectRecommended} disabled={disabled} onChange={e=>{setSelectRecommended(e.target.checked);setPlan(null)}}/> Выбрать рабочий сервер из проверенных</label>
@@ -59,6 +60,7 @@ export function ConfigurationAssistant({report,locked=false,onDone,session}:{rep
    <div className="settings-selects">{[{key:'proxy_port' as const,label:'Локальный порт',min:1024,max:65535},{key:'health_interval' as const,label:'Проверять соединение каждые, секунд',min:10,max:3600},{key:'metric_interval' as const,label:'Интервал замеров, секунд',min:60,max:3600}].map(field=><label key={field.key}>{field.label}<input aria-label={field.label} disabled={disabled} type="number" min={field.min} max={field.max} placeholder="Сохранить" value={patch[field.key]??''} onChange={e=>change(field.key,e.target.value===''?undefined:Number(e.target.value))}/></label>)}</div>
    <label><input type="checkbox" checked={replaceRules} disabled={disabled} onChange={e=>{setReplaceRules(e.target.checked);setPlan(null)}}/> Заменить пользовательские правила</label>
    {replaceRules&&<label>Правила маршрутизации<textarea aria-label="Правила плана" disabled={disabled} value={rules} onChange={e=>{setRules(e.target.value);setPlan(null)}} placeholder={'example.com vpn\n*.example.ru direct'}/></label>}
+  </details>
   </details>
   {!report?.check_id&&<p className="footnote">Сначала нажмите «Проверить и настроить».</p>}
   <div className="bottom-toolbar"><button className="primary" disabled={disabled||!report?.check_id||report.changed} onClick={()=>void prepare()}>Подготовить план настройки</button>

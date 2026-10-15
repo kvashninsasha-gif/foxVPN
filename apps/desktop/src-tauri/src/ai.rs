@@ -21,6 +21,7 @@ use tauri::{Emitter, Manager};
 struct Check {
     id: String,
     facts: Facts,
+    healthy: bool,
     stamp: String,
     time: Instant,
 }
@@ -308,6 +309,7 @@ pub fn remember(app: &tauri::AppHandle, report: &Report, stamp: String) -> Resul
         .map_err(|_| "Не удалось сохранить проверку")? = Some(Check {
         id: report.check_id.clone(),
         facts,
+        healthy: report.healthy,
         stamp,
         time: Instant::now(),
     });
@@ -324,6 +326,13 @@ pub struct Explanation {
     text: String,
     advice: &'static str,
     elapsed_ms: u64,
+}
+fn healthy_explanation(healthy: bool) -> Option<Explanation> {
+    healthy.then(|| Explanation {
+        text: "Всё в порядке. Проверка соединения прошла.".into(),
+        advice: "Менять настройки не требуется.",
+        elapsed_ms: 0,
+    })
 }
 struct Worker(Assistant);
 impl Drop for Worker {
@@ -417,7 +426,7 @@ pub async fn ai_explain(
         return Err("Дождитесь обновления приложения".into());
     }
     let current = stamp(&state)?;
-    let facts = {
+    let (facts, healthy) = {
         let check = ai
             .check
             .lock()
@@ -425,8 +434,13 @@ pub async fn ai_explain(
         let check = check
             .as_ref()
             .ok_or("Сначала запустите проверку подключения")?;
-        checked_facts(check, &check_id, &current)?
+        (checked_facts(check, &check_id, &current)?, check.healthy)
     };
+    // A healthy fresh check needs no language model, download or child worker.
+    // This value comes from the stored diagnostic, never from the WebView.
+    if let Some(explanation) = healthy_explanation(healthy) {
+        return Ok(explanation);
+    }
     let state = state.inner().clone();
     let ai = ai.inner().clone();
     let busy = ai.acquire(2)?;
@@ -523,12 +537,24 @@ mod tests {
             stamp: "settings".into(),
             time: Instant::now(),
             facts,
+            healthy: false,
         };
         assert!(checked_facts(&check, "id", "settings").is_ok());
         assert!(checked_facts(&check, "fake", "settings").is_err());
         assert!(checked_facts(&check, "id", "changed-settings").is_err());
         check.time -= Duration::from_secs(121);
         assert!(checked_facts(&check, "id", "settings").is_err());
+    }
+    #[test]
+    fn healthy_diagnostic_has_a_concise_model_free_answer_only_when_confirmed() {
+        assert!(healthy_explanation(false).is_none());
+        let explanation = healthy_explanation(true).unwrap();
+        assert_eq!(
+            explanation.text,
+            "Всё в порядке. Проверка соединения прошла."
+        );
+        assert_eq!(explanation.advice, "Менять настройки не требуется.");
+        assert_eq!(explanation.elapsed_ms, 0);
     }
     #[test]
     fn model_receives_no_private_report_strings_or_server_identity() {
