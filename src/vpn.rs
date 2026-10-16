@@ -218,7 +218,10 @@ impl CoreProcess {
         settings: &Settings,
         rules: &[Rule],
     ) -> Result<Self, String> {
-        Self::start_on_port(binary, s, settings, rules, free_port()?)
+        // Keep the OS-assigned port reserved through configuration validation.
+        // Choosing an ephemeral port and binding it again leaves a race with
+        // concurrent measurements and other local applications.
+        Self::start_internal(binary, s, settings, rules, 0, None)
     }
     /// Interactive connections keep a stable port; isolated measurements use
     /// `start` so they can run alongside the user's active proxy.
@@ -259,6 +262,10 @@ impl CoreProcess {
         // Fail clearly instead of mistaking another listener for our core.
         let reservation = std::net::TcpListener::bind(("127.0.0.1", port))
             .map_err(|_| crate::text("message_271"))?;
+        let port = reservation
+            .local_addr()
+            .map_err(|_| crate::text("message_273"))?
+            .port();
         let mut api_port = free_port()?;
         while api_port == port {
             api_port = free_port()?

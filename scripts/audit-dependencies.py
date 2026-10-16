@@ -40,10 +40,15 @@ def rust_findings(raw):
         for item in entries:
             package = item["package"]
             advisory = item.get("advisory") or {}
+            versions = item.get("versions")
+            if versions is None:
+                versions = {}
+            if not isinstance(versions, dict):
+                raise ValueError("Invalid cargo-audit versions")
             findings.append({"advisory": advisory.get("id", "YANKED"), "package": package["name"],
                              "version": package["version"], "kind": kind,
                              "title": advisory.get("title", "Yanked package"),
-                             "url": advisory.get("url"), "patched": item.get("versions", {}).get("patched", [])})
+                             "url": advisory.get("url"), "patched": versions.get("patched", [])})
     return findings
 
 

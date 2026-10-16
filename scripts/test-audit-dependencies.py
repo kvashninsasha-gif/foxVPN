@@ -95,6 +95,21 @@ class AuditPolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gate.windows_npm_command(root / "npm.cmd", "node.exe", ["--version"])
 
+    def test_yanked_package_without_versions_is_reported_and_still_blocks_release(self):
+        raw = {"settings": {"ignore": [], "target_arch": [], "target_os": [], "severity": None,
+                             "informational_warnings": ["unmaintained", "unsound", "notice"]},
+               "vulnerabilities": {"count": 0, "list": []},
+               "warnings": {"yanked": [{"package": {"name": "zip", "version": "4.6.1"},
+                                        "advisory": None, "versions": None}]}}
+        findings = gate.rust_findings(raw)
+        self.assertEqual(findings[0]["advisory"], "YANKED")
+        self.assertEqual(findings[0]["patched"], [])
+        results, _ = gate.assess(findings, self.baseline, self.trees, self.today)
+        self.assertEqual(results[0]["status"], "unresolved")
+        raw["warnings"]["yanked"][0]["versions"] = "malformed"
+        with self.assertRaises(ValueError):
+            gate.rust_findings(raw)
+
     def test_missing_scanner_invalidates_stale_success_and_owned_evidence(self):
         with tempfile.TemporaryDirectory(prefix="foxvpn-audit-failure-public-") as work:
             output = Path(work)
