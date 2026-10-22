@@ -1,11 +1,11 @@
 {
-  "version": "0.1.29",
-  "notes": "Подключение больше не блокирует окно: доступна отмена и видно время ожидания.\n\n«Проверить и настроить» сообщает «Всё в порядке», если проблем нет. При ошибке показывает шаги и план изменений до подтверждения. ИИ доступен после проверки.\n\nОбновлены компоненты безопасности. Серверы и настройки сохраняются.\n\nWindows использует локальный прокси с настройкой совместимых браузеров после согласия.",
-  "pub_date": "2026-10-16T07:33:47.086487Z",
+  "version": "0.1.30",
+  "notes": "Обновлены компоненты безопасного HTTPS и VPN-ядро. Профили и настройки сохраняются.",
+  "pub_date": "2026-10-22T11:39:17.212462Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.29/foxVPN_0.1.29_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbTBpTnZsUFdvYUl6RE5FY1dMUEQzcmNJUWZkY1djTWk3QzR0L3ZyN1IrT01qT1Qza3YwWmR4SnZVVTdDLytuOVdyS1h4WFlhUjZNTU5UR1BxNFd5dVFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMTM2MDI3CWZpbGU6Zm94VlBOXzAuMS4yOV94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xLjI5CnNUOThzTmlWQ3BJdVpZQThwcUI1dllaUzNBTTdocGxpdXdla3YxU3VGOHNoQldYOE1CYklUR3JzaHJaL3NKdnphdHVaN2UvZjVkdkNubWJSeHFqMURnPT0K"
+      "url": "https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.30/foxVPN_0.1.30_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbXpJMnhpY0oybGt0WXVka1I0MGdaQWhERmppZUt3NXJKRVhOSlRYNXlkL3l5dEoycDA1T0djcVJiVERSaDdXWktXOFJYUER5bEdZRWZIMmlOVzVuancwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNjY5MTU3CWZpbGU6Zm94VlBOXzAuMS4zMF94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xLjMwCkd4cGNyWmN0cm1aZFU1aWNSWHVnTHFLTGg5ZlgyeElmSDJETC9BbjY4RUJDUzZvWFZsSmtENTFiM3puNUN6OGlRRHl5cmpkakpLejVRdjUrZUdVckJnPT0K"
     }
   }
 }

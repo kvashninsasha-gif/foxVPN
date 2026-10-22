@@ -1,11 +1,11 @@
 {
-  "version": "0.1.29",
-  "notes": "Подключение больше не блокирует окно: доступна отмена и видно время ожидания.\n\n«Проверить и настроить» сообщает «Всё в порядке», если проблем нет. При ошибке показывает шаги и план изменений до подтверждения. ИИ доступен после проверки.\n\nОбновлены компоненты безопасности. Серверы и настройки сохраняются.",
-  "pub_date": "2026-10-16T07:10:13.002611Z",
+  "version": "0.1.30",
+  "notes": "В macOS добавлен выбор приложений без VPN: Маршрутизация → Приложения без VPN. Выберите Windows App или другую программу, сохраните список при отключённом VPN и подключитесь снова. Системный DNS остаётся защищённым. Обновлены компоненты проверки TLS; профили и настройки сохраняются.",
+  "pub_date": "2026-10-22T08:41:05.244510Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.29/foxVPN-0.1.29-macOS-arm64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbS9SVXh4ajUvMDdCSEtRZGpieGc0SGxBMEh0NHZmTjZ2M1dKN0gzZWZxekZabnVXSHV0K1dWcU5hNDVRZ2NaL2tVYm9aM3NCYXZrcDI3bVNOMWtyWnd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMTM0NjEyCWZpbGU6Zm94VlBOLTAuMS4yOS1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjI5CjFKNjdGRHAyYlNCbmhUQ3lhbjVaaUJqVnUvRE1WYWRsb0ZTZU1PQ21zMFgzUnd0RXpENE4vTGs4c2MyRHF3TW9PVVFRNzFMRitvK0tUZWRuckpRL0F3PT0K"
+      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.30/foxVPN-0.1.30-macOS-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbTZIZzFDeEk4cWUvYUZHd1ZwTzk2SEdYbURZS2RWcy9taWRWc1pXc2dZUGw5VDBIeFQrOXpPOXZWdXFUZjROTWRDNFR0VXMvajV6RWUybVFLUS9ZZndFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNjU4NDY1CWZpbGU6Zm94VlBOLTAuMS4zMC1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjMwCmRLOHlrQjJ5bXJUMmM2Mm1PNmJySHFpWWd6Ym91TWtrMWxrTmVBL0RsK05PTnd4dHFGdVpqSGRpY0xTZGQ4RFZZQThxaDlaK0tZY3lKODZNcWtDQUFBPT0K"
     }
   }
 }
