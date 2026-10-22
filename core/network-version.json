@@ -1,11 +1,11 @@
 {
-  "version": "v1.14.3-foxVPN.2",
+  "version": "v1.14.3-foxVPN.3",
   "upstream_version": "1.14.3",
   "platform": "darwin-arm64",
-  "binary_sha256": "1204046d01d9c439d1fae4dd2c1873b74f5506006383d8e49d210937e622268c",
+  "binary_sha256": "7bbe692e7c62d24dffdafb5a88a64ca11a3774211cbfb33e9bd232206fc46d0c",
   "source_archive_sha256": "e10dee2a000c3b4f87b33b2a39b30ce8c65a870a5bdda31b3b2f67760d65b37e",
   "source": "https://api.github.com/repos/SagerNet/sing-box/tarball/7054cac5124465ffdb145870d7c01885566711b1",
-  "toolchain": "go1.26.9",
+  "toolchain": "go1.26.10",
   "tags": "with_utls,with_gvisor,with_clash_api",
   "dependency_overlay_sha256": {
     "go.mod": "2c335df61e036819c4a0694e32748b4a3998c0faf898fc05bcc7c0213c27baf5",
@@ -13,5 +13,6 @@
   },
   "official_binary": false,
   "vulnerability_scan": "assessed-binary-symbols-pass",
+  "process_broker_patch_sha256": "afaf1d252d45ac7c668e62cb75009ae8f9ff050d3236132d1d4cf17df770923e",
   "patch": "scripts/macos/privilege_drop.go"
 }

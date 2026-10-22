@@ -56,7 +56,8 @@ jobs:
           rows=[json.loads(line) for line in Path('target/app-route-test-build.json').read_text().splitlines() if line.startswith('{')]
           executables=[r['executable'] for r in rows if r.get('reason')=='compiler-artifact' and r.get('executable') and r.get('target',{}).get('name')=='app_exclusions']
           assert len(executables)==1
-          subprocess.run(['sudo','-n','env',f'SMARTVPN_TEST_CORE={Path("core/foxvpn-network-core").resolve()}',f'FOXVPN_TEST_APP_UID={os.getuid()}',executables[0],'--exact','actual_core_matches_bundle_and_nested_helper_but_not_sibling_name','--ignored','--nocapture'],check=True)
+          for tun in ['0','1']:
+              subprocess.run(['sudo','-n','env',f'FOXVPN_TEST_APP_TUN={tun}',f'SMARTVPN_TEST_CORE={Path("core/foxvpn-network-core").resolve()}',f'FOXVPN_TEST_APP_UID={os.getuid()}',executables[0],'--exact','actual_core_matches_bundle_and_nested_helper_but_not_sibling_name','--ignored','--nocapture'],check=True)
           PY
       - name: Actual runtime matrix without changing system networking
         run: python3 scripts/test-core-startup.py --generator target/release/examples/startup-fixtures --core core/sing-box --report target/macos-core-startup.json

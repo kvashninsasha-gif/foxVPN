@@ -105,7 +105,10 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
     let Ok(binary) = std::env::var("SMARTVPN_TEST_CORE") else {
         return;
     };
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("foxvpn-public-apps-")
+        .tempdir_in("/private/tmp")
+        .unwrap();
     assert_eq!(unsafe { libc::geteuid() }, 0);
     let app_uid: u32 = std::env::var("FOXVPN_TEST_APP_UID")
         .expect("non-root fixture owner")
@@ -127,6 +130,12 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
     let outside = dir.path().join("other-client");
     for path in [&main, &helper, &sibling, &outside] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for parent in path.parent().unwrap().ancestors() {
+            if !parent.starts_with(dir.path()) {
+                break;
+            }
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         std::fs::copy("/usr/bin/curl", path).unwrap();
         // A relocated Apple platform binary must lose its platform signature.
         assert!(Command::new("/usr/bin/codesign")
@@ -181,15 +190,24 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
     let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = proxy.local_addr().unwrap().port();
     let mut cfg = vpn::config(&server, &settings, &[], port, 0, "public-app-fixture").unwrap();
-    // Keep production process routing, but remove TUN to isolate the test from
-    // the host network. Separate system acceptance covers real TUN routing.
-    cfg["inbounds"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|i| i["type"] != "tun");
-    // The loopback direct inbound preserves the real socket destination for
-    // macOS process lookup, unlike an HTTP proxy's logical destination.
-    cfg["inbounds"][0] = serde_json::json!({"type":"direct","tag":"fixture-in","listen":"127.0.0.1","listen_port":port,"override_address":"127.0.0.1","override_port":http_port});
+    let tun = std::env::var("FOXVPN_TEST_APP_TUN").as_deref() == Ok("1");
+    let target = if tun { "198.18.0.2" } else { "127.0.0.1" };
+    let target_port = if tun { http_port } else { port };
+    if tun {
+        // Only the documentation benchmark subnet is routed on this disposable
+        // runner. DNS and the default route are unchanged; no laptop is touched.
+        cfg["inbounds"][1]["address"] = serde_json::json!(["172.29.0.1/30"]);
+        cfg["inbounds"][1]["route_address"] = serde_json::json!(["198.18.0.0/15"]);
+        cfg["inbounds"][1]["dns_mode"] = serde_json::json!("disabled");
+        cfg["route"]["rules"][2]["override_address"] = serde_json::json!("127.0.0.1");
+        cfg["route"]["rules"][2]["override_port"] = serde_json::json!(http_port);
+    } else {
+        cfg["inbounds"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|i| i["type"] != "tun");
+        cfg["inbounds"][0] = serde_json::json!({"type":"direct","tag":"fixture-in","listen":"127.0.0.1","listen_port":port,"override_address":"127.0.0.1","override_port":http_port});
+    }
     cfg.as_object_mut().unwrap().remove("experimental");
     cfg["log"]["level"] = serde_json::json!("debug");
     let log_path = dir.path().join("core.log");
@@ -228,12 +246,23 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
         "core did not listen: {}",
         std::fs::read_to_string(&log_path).unwrap()
     );
-    std::thread::sleep(Duration::from_millis(100));
-    let uid = Command::new("/bin/ps")
-        .args(["-o", "uid=", "-p", &_core.0.id().to_string()])
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&uid.stdout).trim(), "62077");
+    let mut dropped = false;
+    for _ in 0..80 {
+        let uid = Command::new("/bin/ps")
+            .args(["-o", "uid=", "-p", &_core.0.id().to_string()])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&uid.stdout).trim() == "62077" {
+            dropped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        dropped,
+        "core did not drop privileges: {}",
+        std::fs::read_to_string(&log_path).unwrap()
+    );
     let results = [&main, &helper, &sibling, &outside].map(|client| {
         let mut command = Command::new(client);
         unsafe {
@@ -256,7 +285,7 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
                 "3",
                 "--noproxy",
                 "*",
-                &format!("http://127.0.0.1:{port}/verified"),
+                &format!("http://{target}:{target_port}/verified"),
             ])
             .output()
             .unwrap()
@@ -279,4 +308,79 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
         count, 2,
         "only the two selected bundle executables may connect directly"
     );
+    if tun {
+        let echo = std::net::UdpSocket::bind(("127.0.0.1", http_port)).unwrap();
+        echo.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let finished = Arc::new(AtomicBool::new(false));
+        let end = finished.clone();
+        let worker = std::thread::spawn(move || {
+            let mut count = 0;
+            let mut buf = [0; 64];
+            while !end.load(Ordering::SeqCst) {
+                if let Ok((size, peer)) = echo.recv_from(&mut buf) {
+                    count += 1;
+                    echo.send_to(&buf[..size], peer).unwrap();
+                }
+            }
+            count
+        });
+        let udp_main = bundle.join("Contents/MacOS/UdpFixture");
+        let udp_outside = dir.path().join("udp-other-client");
+        let results = [&udp_main, &udp_outside].map(|path| {
+            std::fs::copy(std::env::current_exe().unwrap(), path).unwrap();
+            assert!(Command::new("/usr/bin/codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(path)
+                .output()
+                .unwrap()
+                .status
+                .success());
+            let mut command = Command::new(path);
+            command
+                .args(["--exact", "public_app_udp_client", "--ignored"])
+                .env("FOXVPN_TEST_UDP_TARGET", format!("{target}:{target_port}"));
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::setgroups(0, std::ptr::null()) != 0
+                        || libc::setgid(20) != 0
+                        || libc::setuid(app_uid) != 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            command.output().unwrap()
+        });
+        finished.store(true, Ordering::SeqCst);
+        let received = worker.join().unwrap();
+        assert!(
+            results[0].status.success(),
+            "selected UDP app: {}\n{}",
+            String::from_utf8_lossy(&results[0].stdout),
+            std::fs::read_to_string(&log_path).unwrap()
+        );
+        assert!(
+            !results[1].status.success(),
+            "unselected UDP client bypassed VPN"
+        );
+        assert_eq!(received, 1);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "public subprocess fixture for the disposable TUN test"]
+fn public_app_udp_client() {
+    let target = std::env::var("FOXVPN_TEST_UDP_TARGET").expect("public UDP target");
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    socket.connect(target).unwrap();
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    socket.send(b"APP-DIRECT").unwrap();
+    let mut buf = [0; 64];
+    let size = socket.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..size], b"APP-DIRECT");
 }
