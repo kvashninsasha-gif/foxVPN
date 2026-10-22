@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub excluded_apps: Vec<crate::app_routes::Application>,
     pub mode: Mode,
     pub tun: bool,
     pub kill_switch: bool,
@@ -29,6 +30,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            excluded_apps: vec![],
             mode: Mode::Smart,
             tun: true,
             kill_switch: true,
@@ -53,6 +55,7 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
+        crate::app_routes::validate(&self.excluded_apps)?;
         if !(60..=3600).contains(&self.metric_interval) {
             return Err(crate::text("metric_interval_invalid").into());
         }

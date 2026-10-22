@@ -12,6 +12,7 @@ on:
       - 'locales/**'
       - 'scripts/download-core.py'
       - 'scripts/build-core.py'
+      - 'scripts/macos/**'
       - 'scripts/check-go-advisories.py'
       - 'vendor/**'
       - 'scripts/test-core-startup.py'
@@ -30,7 +31,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: false
       - name: Verify fail-closed Go advisory policy
         run: python scripts/test-go-advisories.py
@@ -44,6 +45,19 @@ jobs:
           SMARTVPN_TEST_CORE: ${{ github.workspace }}/core/sing-box
       - name: Build production fixture generator
         run: cargo build --locked --release --example startup-fixtures
+      - name: Build final privilege-drop core for app exclusions
+        run: python3 scripts/build-network-core.py --work-dir target/network-core-source --scan
+      - name: Verify actual app routing after privilege drop on disposable runner
+        run: |
+          cargo test --locked --test app_exclusions --no-run --message-format=json > target/app-route-test-build.json
+          python3 - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          rows=[json.loads(line) for line in Path('target/app-route-test-build.json').read_text().splitlines() if line.startswith('{')]
+          executables=[r['executable'] for r in rows if r.get('reason')=='compiler-artifact' and r.get('executable') and r.get('target',{}).get('name')=='app_exclusions']
+          assert len(executables)==1
+          subprocess.run(['sudo','-n','env',f'SMARTVPN_TEST_CORE={Path("core/foxvpn-network-core").resolve()}',f'FOXVPN_TEST_APP_UID={os.getuid()}',executables[0],'--exact','actual_core_matches_bundle_and_nested_helper_but_not_sibling_name','--ignored','--nocapture'],check=True)
+          PY
       - name: Actual runtime matrix without changing system networking
         run: python3 scripts/test-core-startup.py --generator target/release/examples/startup-fixtures --core core/sing-box --report target/macos-core-startup.json
       - uses: actions/upload-artifact@v4

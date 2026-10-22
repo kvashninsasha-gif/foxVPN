@@ -2,8 +2,8 @@
 """Reproducible core from pinned GPL source, reviewed dependency overlay and Go toolchain."""
 import argparse, hashlib, json, os, pathlib, platform, shutil, subprocess, tarfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = '1.14.3-foxVPN.2'
-TOOLCHAIN = 'go1.26.9'
+VERSION = '1.14.3-foxVPN.3'
+TOOLCHAIN = 'go1.26.10'
 TAGS = 'with_utls,with_gvisor,with_clash_api'
 
 def digest(path):
@@ -24,6 +24,12 @@ def build(target, work, network=False, scan=False):
         src.extractall(work, filter='data')
     for name in ['go.mod', 'go.sum']:
         shutil.copyfile(ROOT/'vendor/core-patches'/name, source/name)
+    if target.startswith('darwin-'):
+        searcher = source/'common/process/searcher_darwin.go'
+        text = searcher.read_text(); needle = 'return &darwinSearcher{}, nil'
+        if text.count(needle) != 1: raise SystemExit('Process lookup patch context differs')
+        searcher.write_text(text.replace(needle, 'if searcher, err, supplied := newFoxProcessSearcher(); supplied { return searcher, err }; '+needle))
+        shutil.copyfile(ROOT/'scripts/macos/process_broker.go', source/'common/process/foxvpn_process_broker_darwin.go')
     if network:
         run = source/'cmd/sing-box/cmd_run.go'
         text = run.read_text(); needle = '\t\truntimeDebug.FreeOSMemory()'
@@ -53,6 +59,7 @@ def build(target, work, network=False, scan=False):
         # Tauri maps the neutral source pathname to core/sing-box.exe.
         shutil.copyfile(binary, ROOT/'core/sing-box')
     info = dict(version='v'+VERSION, upstream_version=manifest['version'], platform=target, binary_sha256=digest(binary), source_archive_sha256=manifest['sha256'], source=manifest['source'], toolchain=TOOLCHAIN, tags=TAGS, dependency_overlay_sha256={n:digest(ROOT/'vendor/core-patches'/n) for n in ['go.mod','go.sum']}, official_binary=False, vulnerability_scan='assessed-binary-symbols-pass' if scan else 'not-run')
+    if goos=='darwin': info['process_broker_patch_sha256']=digest(ROOT/'scripts/macos/process_broker.go')
     if network: info['patch']='scripts/macos/privilege_drop.go'
     (ROOT/'core'/('network-version.json' if network else 'version.json')).write_text(json.dumps(info,indent=2)+'\n')
     print('Built pinned core', VERSION, target, info['binary_sha256'])

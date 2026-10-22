@@ -142,8 +142,8 @@ class GoAdvisoryTests(unittest.TestCase):
             events[2]["osv"][field] = value
             self.assertFalse(self.assess(events=events)["passed"])
         events = copy.deepcopy(self.events)
-        events[1]["SBOM"]["go_version"] = "go1.26.10"
-        events[1]["SBOM"]["modules"][0]["version"] = "go1.26.10"
+        events[1]["SBOM"]["go_version"] = "go1.26.9"
+        events[1]["SBOM"]["modules"][0]["version"] = "go1.26.9"
         self.assertFalse(self.assess(events=events)["passed"])
         for date in [datetime.date(2026, 10, 10), datetime.date(2027, 1, 1)]:
             self.assertFalse(self.assess(date=date)["passed"])

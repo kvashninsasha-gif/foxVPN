@@ -50,4 +50,5 @@ header{position:sticky;top:0;z-index:10}
 
 .connection-progress{margin-bottom:20px;padding:18px 22px;border-left:3px solid var(--primary,#c66029)}
 .connection-progress p{margin:8px 0;color:var(--text-muted,#7a879e);font-size:13px;line-height:1.5}
+.app-exclusions[hidden]{display:none}.app-exclusions{margin-top:22px}.app-exclusions>p{line-height:1.6}.app-exclusions-list{list-style:none;padding:0;margin:16px 0}.app-exclusions-list li{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 0;border-bottom:1px solid #dfe5ee}.app-exclusions-list li>div{display:grid;gap:5px;min-width:0}.app-exclusions-list span{font-size:12px;color:#7a879e;overflow-wrap:anywhere}.app-catalog{max-height:350px;overflow:auto}.app-picker .search{margin-top:15px}.app-exclusions .bottom-toolbar{flex-wrap:wrap}[data-theme=dark] .app-exclusions-list li{border-color:#46556b}
 .setup-result{margin-top:18px}.setup-result h4{margin-bottom:8px}.setup-result li{margin:8px 0;line-height:1.5}.setup-result.healthy h4{color:#278052}.diagnostic-details{margin:16px 0}.setting-panel summary{cursor:pointer;line-height:1.5}.setting-panel details[open]>summary{margin-bottom:12px}

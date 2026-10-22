@@ -16,6 +16,26 @@ beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{}
 afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
+ it('Mac routing saves selected apps separately and preserves unrelated preferences',async()=>{
+  snapshot.platform='macos';snapshot.helper_available=true;const original=ipc.invoke.getMockImplementation()!;
+  const app={name:'Windows App',path:'/Applications/Windows App.app'};
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{
+   if(command==='list_macos_apps')return [app];
+   if(command==='save_app_exclusions'){snapshot.profile.settings.excluded_apps=args.apps;return;}
+   return original(command,args);
+  });
+  await ready();expect(screen.queryByRole('button',{name:'Добавить приложение'})).toBeNull();
+  fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
+  fireEvent.click(screen.getByRole('button',{name:'Добавить приложение'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Добавить Windows App в исключения'}));
+  fireEvent.click(screen.getAllByRole('button',{name:'Настройки',exact:true})[0]);
+  fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
+  fireEvent.click(screen.getByRole('button',{name:'Сохранить исключения'}));
+  await waitFor(()=>expect(snapshot.profile.settings.excluded_apps).toEqual([app]));
+  expect(ipc.invoke).toHaveBeenCalledWith('save_app_exclusions',{apps:[app],expected:[]});
+  expect(snapshot.profile.settings.dns_provider).toBe('cloudflare');
+  expect(ipc.invoke.mock.calls.some(([c])=>['connect','stop','save_settings'].includes(c))).toBe(false);
+ });
  it('Windows main app exposes local AI without applying its suggested proxy repair',async()=>{
   snapshot.platform='windows';snapshot.status='connected';snapshot.connection_plan='ready';
   const original=ipc.invoke.getMockImplementation()!;
@@ -80,6 +100,9 @@ describe('connection setup regression',()=>{
 
  it('Windows offers explicit proxy consent and hides unsupported macOS controls',async()=>{
   snapshot.platform='windows';await ready();
+  fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
+  expect(screen.queryByRole('button',{name:'Добавить приложение'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Обзор',exact:true}));
   expect(screen.getAllByText(/Windows: в этой сборке/).length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));
   expect(ipc.invoke.mock.calls.some(([command])=>command==='connect')).toBe(false);

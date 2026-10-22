@@ -8,9 +8,9 @@ use smart_vpn_engine::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 static OPEN: AtomicBool = AtomicBool::new(false);
-struct DialogGuard;
+pub(super) struct DialogGuard;
 impl DialogGuard {
-    fn acquire() -> Result<Self, String> {
+    pub(super) fn acquire() -> Result<Self, String> {
         OPEN.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map(|_| Self)
             .map_err(|_| smart_vpn_engine::text("file_dialog_busy").into())

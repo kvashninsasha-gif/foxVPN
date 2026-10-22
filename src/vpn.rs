@@ -78,10 +78,15 @@ pub fn config(
     } else {
         "vpn"
     };
+    let app_exclusions =
+        cfg!(target_os = "macos") && settings.tun && !settings.excluded_apps.is_empty();
     let mut route = vec![
         json!({"action":"sniff"}),
         json!({"protocol":"dns","action":"hijack-dns"}),
     ];
+    if app_exclusions {
+        route.push(json!({"process_path_regex":settings.excluded_apps.iter().map(crate::app_routes::bundle_pattern).collect::<Vec<_>>(),"action":"route","outbound":"direct"}));
+    }
     // Infrastructure only: private IP bypass is intentionally absent (could override user rules).
     let mut dns_rules = vec![];
     if matches!(settings.mode, Mode::Smart | Mode::Custom) {
@@ -132,7 +137,10 @@ pub fn config(
     if settings.tun {
         inbounds.push(json!({"type":"tun","tag":"tun-in","address":["172.29.0.1/30","fdfe:dcba:9876::1/126"],"auto_route":true,"strict_route":true,"stack":"mixed"}));
     }
-    let cfg = json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}});
+    let mut cfg = json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}});
+    if app_exclusions {
+        cfg["route"]["find_process"] = json!(true);
+    }
     validate_dns_detours(&cfg)?;
     Ok(cfg)
 }
@@ -196,6 +204,8 @@ fn startup_error(stage: &str, raw: &str, server: &Server, token: &str) -> String
     format!("{stage}: {}. {detail}", friendly_error(raw))
 }
 pub struct CoreProcess {
+    #[cfg(target_os = "macos")]
+    _app_broker: Option<crate::app_process_broker::Broker>,
     pub child: Child,
     pub dir: PathBuf,
     pub proxy_port: u16,
@@ -320,6 +330,15 @@ impl CoreProcess {
         drop(reservation);
         let mut command = Command::new(binary);
         hide_console(&mut command);
+        #[cfg(target_os = "macos")]
+        let app_broker = if uid.is_some() && !settings.excluded_apps.is_empty() {
+            Some(crate::app_process_broker::Broker::attach(
+                &mut command,
+                &settings.excluded_apps,
+            )?)
+        } else {
+            None
+        };
         if let Some(uid) = uid {
             command.env("FOXVPN_CORE_UID", uid.to_string());
         }
@@ -334,6 +353,11 @@ impl CoreProcess {
                 let _ = std::fs::remove_dir_all(&dir);
                 crate::text("message_281")
             })?;
+        #[cfg(target_os = "macos")]
+        let app_broker = app_broker.map(|(broker, child_fd)| {
+            drop(child_fd);
+            broker
+        });
         #[cfg(windows)]
         let job = match crate::process_lifetime::ProcessJob::attach(&child) {
             Ok(job) => job,
@@ -384,6 +408,8 @@ impl CoreProcess {
             });
         }
         let mut proc = Self {
+            #[cfg(target_os = "macos")]
+            _app_broker: app_broker,
             child,
             dir,
             proxy_port: port,

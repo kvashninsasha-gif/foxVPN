@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod ai;
 mod ai_runtime;
+mod app_exclusions;
 #[cfg(test)]
 mod connection_responsiveness;
 mod diagnostics;
@@ -178,7 +179,7 @@ fn snapshot_impl(s: &State) -> Snapshot {
         profile,
         status: s.status.lock().unwrap().clone(),
         proxy_port,
-        core_version: "1.14.3-foxVPN.2".into(),
+        core_version: "1.14.3-foxVPN.3".into(),
         logs,
         helper_available,
         platform: std::env::consts::OS,
@@ -1474,6 +1475,9 @@ fn main() {
             server_uri,
             save_rules,
             save_settings,
+            app_exclusions::list_macos_apps,
+            app_exclusions::pick_macos_app,
+            app_exclusions::save_app_exclusions,
             set_metric_settings,
             check_route,
             connect,

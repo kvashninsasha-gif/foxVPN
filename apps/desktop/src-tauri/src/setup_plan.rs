@@ -425,7 +425,7 @@ fn build(
     {
         steps.push("При подключении включить прокси Windows. Прежние параметры будут сохранены и восстановлены при отключении".into());
     }
-    let scope = if windows {
+    let mut scope = if windows {
         "Локальный прокси Windows: только совместимые приложения"
     } else if after.settings.tun {
         "Системный VPN всего Mac"
@@ -433,6 +433,18 @@ fn build(
         "Локальный прокси Mac: только настроенные приложения"
     }
     .to_string();
+    if !windows && after.settings.tun && !after.settings.excluded_apps.is_empty() {
+        scope.push_str(&format!(
+            "; приложения без VPN: {}",
+            after
+                .settings
+                .excluded_apps
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     Ok((
         after,
         Plan {
@@ -1377,6 +1389,20 @@ mod tests {
         assert!(after.settings.tun);
         assert!(plan.scope.contains("всего Mac"));
         assert!(!plan.blockers.is_empty());
+        let mut excluded = p.clone();
+        excluded
+            .settings
+            .excluded_apps
+            .push(smart_vpn_engine::app_routes::Application {
+                name: "Windows App".into(),
+                path: "/Applications/Windows App.app".into(),
+            });
+        let (after, plan) = build(&excluded, &report, &options, false, true, false, None).unwrap();
+        assert_eq!(
+            after.settings.excluded_apps,
+            excluded.settings.excluded_apps
+        );
+        assert!(plan.scope.contains("приложения без VPN: Windows App"));
     }
     #[test]
     fn cancellation_before_mutation_does_not_change_existing_connection_intent() {
