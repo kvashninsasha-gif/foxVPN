@@ -16,6 +16,24 @@ beforeEach(()=>{snapshot=fixture();ipc.listen.mockImplementation(async()=>()=>{}
 afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
+ it('Windows overview presents connection before proxy support and offers exe exclusions',async()=>{
+  snapshot.platform='windows';
+  const original=ipc.invoke.getMockImplementation()!;
+  const exe={name:'Browser',path:'C:\\Apps\\browser.exe'};
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{
+   if(command==='pick_windows_app')return exe;
+   if(command==='save_app_exclusions'){snapshot.profile.settings.windows_excluded_apps=args.apps;return;}
+   return original(command,args);
+  });
+  const {container}=render(<App/>);await screen.findByText('Тестовый сервер');
+  const card=container.querySelector('.connection-card')!;
+  const proxy=screen.getByText('Прокси для браузеров Windows');
+  expect(card.compareDocumentPosition(proxy)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
+  fireEvent.click(screen.getByRole('button',{name:'Добавить приложение'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Сохранить исключения'}));
+  await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('save_app_exclusions',{apps:[exe],expected:[]}));
+ });
  it('Mac routing saves selected apps separately and preserves unrelated preferences',async()=>{
   snapshot.platform='macos';snapshot.helper_available=true;const original=ipc.invoke.getMockImplementation()!;
   const app={name:'Windows App',path:'/Applications/Windows App.app'};
@@ -101,7 +119,7 @@ describe('connection setup regression',()=>{
  it('Windows offers explicit proxy consent and hides unsupported macOS controls',async()=>{
   snapshot.platform='windows';await ready();
   fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
-  expect(screen.queryByRole('button',{name:'Добавить приложение'})).toBeNull();
+  expect(screen.getByRole('button',{name:'Добавить приложение'})).toBeTruthy();
   fireEvent.click(screen.getByRole('button',{name:'Обзор',exact:true}));
   expect(screen.getAllByText(/Windows: в этой сборке/).length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole('button',{name:'Подключиться',exact:true}));

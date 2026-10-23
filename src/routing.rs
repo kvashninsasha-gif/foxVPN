@@ -67,29 +67,41 @@ pub fn matches(pattern: &str, domain: &str) -> bool {
         domain == p
     }
 }
+/// Exact hosts precede wildcard rules; the most specific wildcard wins.
+/// Shared by the preview and the generated traffic/DNS rules.
+pub fn ordered_rules(rules: &[Rule]) -> Vec<&Rule> {
+    let mut ordered: Vec<_> = rules.iter().collect();
+    ordered.sort_by_cached_key(|r| {
+        let wildcard = r.domain.starts_with("*.");
+        let normalized =
+            normalize(r.domain.strip_prefix("*.").unwrap_or(&r.domain)).unwrap_or_default();
+        (wildcard, std::cmp::Reverse(normalized.len()), normalized)
+    });
+    ordered
+}
 pub fn decide(input: &str, mode: &Mode, rules: &[Rule]) -> Result<Decision, String> {
     let domain = normalize(input)?;
+    if let Some(r) = ordered_rules(rules)
+        .into_iter()
+        .find(|r| matches(&r.domain, &domain))
+    {
+        return Ok(Decision {
+            domain,
+            route: r.route.clone(),
+            reason: crate::text("custom_rule_reason").replace("{domain}", &r.domain),
+        });
+    }
     let (route, reason) = match mode {
         Mode::Vpn => ("vpn", crate::text("message_261")),
         Mode::Direct => ("direct", crate::text("message_262")),
-        _ => {
-            if let Some(r) = rules.iter().find(|r| matches(&r.domain, &domain)) {
-                return Ok(Decision {
-                    domain,
-                    route: r.route.clone(),
-                    reason: crate::text("custom_rule_reason").replace("{domain}", &r.domain),
-                });
-            }
-            if *mode == Mode::Smart
-                && ["ru", "su", "xn--p1ai"]
-                    .iter()
-                    .any(|t| domain.ends_with(&format!(".{t}")))
-            {
-                ("direct", crate::text("message_263"))
-            } else {
-                ("vpn", crate::text("message_264"))
-            }
+        Mode::Smart
+            if ["ru", "su", "xn--p1ai"]
+                .iter()
+                .any(|t| domain.ends_with(&format!(".{t}"))) =>
+        {
+            ("direct", crate::text("message_263"))
         }
+        _ => ("vpn", crate::text("message_264")),
     };
     Ok(Decision {
         domain,

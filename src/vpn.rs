@@ -84,30 +84,36 @@ pub fn config(
         json!({"action":"sniff"}),
         json!({"protocol":"dns","action":"hijack-dns"}),
     ];
+    let windows_exclusions = cfg!(windows) && !settings.windows_excluded_apps.is_empty();
+    // Explicit domains always precede application exclusions and mode defaults.
+    let mut dns_rules = vec![];
+    for r in crate::routing::ordered_rules(rules) {
+        let mut item = domain_match(r);
+        item["action"] = json!("route");
+        item["outbound"] = json!(r.route);
+        route.push(item);
+        let mut item = domain_match(r);
+        item["action"] = json!("route");
+        item["server"] = json!(if r.route == "direct" {
+            "dns-direct"
+        } else {
+            "dns-vpn"
+        });
+        dns_rules.push(item);
+    }
     if app_exclusions {
         route.push(json!({"process_path_regex":settings.excluded_apps.iter().map(crate::app_routes::bundle_pattern).collect::<Vec<_>>(),"action":"route","outbound":"direct"}));
     }
-    // Infrastructure only: private IP bypass is intentionally absent (could override user rules).
-    let mut dns_rules = vec![];
-    if matches!(settings.mode, Mode::Smart | Mode::Custom) {
-        for r in rules {
-            let mut item = domain_match(r);
-            item["action"] = json!("route");
-            item["outbound"] = json!(r.route);
-            route.push(item);
-            let mut item = domain_match(r);
-            item["action"] = json!("route");
-            item["server"] = json!(if r.route == "direct" {
-                "dns-direct"
-            } else {
-                "dns-vpn"
-            });
-            dns_rules.push(item)
-        }
-        if settings.mode == Mode::Smart {
-            route.push(json!({"domain_suffix":["ru","su","xn--p1ai"],"action":"route","outbound":"direct"}));
-            dns_rules.push(json!({"domain_suffix":["ru","su","xn--p1ai"],"action":"route","server":"dns-direct"}));
-        }
+    if windows_exclusions {
+        route.push(json!({"process_path_regex":settings.windows_excluded_apps.iter().map(crate::app_routes::windows_pattern).collect::<Vec<_>>(),"action":"route","outbound":"direct"}));
+    }
+    if settings.mode == Mode::Smart {
+        route.push(
+            json!({"domain_suffix":["ru","su","xn--p1ai"],"action":"route","outbound":"direct"}),
+        );
+        dns_rules.push(
+            json!({"domain_suffix":["ru","su","xn--p1ai"],"action":"route","server":"dns-direct"}),
+        );
     }
     let (ip, name) = match settings.dns_provider.as_str() {
         "google" => ("8.8.8.8", "dns.google"),
@@ -138,7 +144,7 @@ pub fn config(
         inbounds.push(json!({"type":"tun","tag":"tun-in","address":["172.29.0.1/30","fdfe:dcba:9876::1/126"],"auto_route":true,"strict_route":true,"stack":"mixed"}));
     }
     let mut cfg = json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}});
-    if app_exclusions {
+    if app_exclusions || windows_exclusions {
         cfg["route"]["find_process"] = json!(true);
     }
     validate_dns_detours(&cfg)?;

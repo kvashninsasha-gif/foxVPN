@@ -250,8 +250,8 @@ fn rule_key(rule: &Rule) -> Result<String, String> {
 fn rule_changes(before: &[Rule], after: &[Rule]) -> Result<Vec<RuleChange>, String> {
     use std::collections::BTreeMap;
     let map = |rules: &[Rule]| -> Result<BTreeMap<String, (usize, String)>, String> {
-        rules
-            .iter()
+        routing::ordered_rules(rules)
+            .into_iter()
             .enumerate()
             .map(|(i, r)| Ok((rule_key(r)?, (i + 1, r.route.clone()))))
             .collect()
@@ -260,7 +260,7 @@ fn rule_changes(before: &[Rule], after: &[Rule]) -> Result<Vec<RuleChange>, Stri
     let new = map(after)?;
     let mut result = vec![];
     // Keep the displayed order aligned with the effective priority of new rules.
-    for (i, rule) in after.iter().enumerate() {
+    for (i, rule) in routing::ordered_rules(after).into_iter().enumerate() {
         let domain = rule_key(rule)?;
         let prior = old.get(&domain);
         if prior.is_none_or(|(position, route)| *position != i + 1 || route != &rule.route) {
@@ -273,7 +273,7 @@ fn rule_changes(before: &[Rule], after: &[Rule]) -> Result<Vec<RuleChange>, Stri
             });
         }
     }
-    for (i, rule) in before.iter().enumerate() {
+    for (i, rule) in routing::ordered_rules(before).into_iter().enumerate() {
         let domain = rule_key(rule)?;
         if !new.contains_key(&domain) {
             result.push(RuleChange {
@@ -433,6 +433,18 @@ fn build(
         "Локальный прокси Mac: только настроенные приложения"
     }
     .to_string();
+    if windows && !after.settings.windows_excluded_apps.is_empty() {
+        scope.push_str(&format!(
+            " Программы напрямую через локальный прокси: {}. Явные правила сайтов имеют приоритет.",
+            after
+                .settings
+                .windows_excluded_apps
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if !windows && after.settings.tun && !after.settings.excluded_apps.is_empty() {
         scope.push_str(&format!(
             "; приложения без VPN: {}",
@@ -1329,15 +1341,15 @@ mod tests {
             ("new.example.com", "vpn"),
         ]);
         let changes = rule_changes(&before, &after).unwrap();
-        assert_eq!(changes.len(), 4);
-        assert_eq!(changes[0].domain, "*.example.ru");
-        assert_eq!(changes[0].previous_position, Some(2));
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[0].domain, "new.example.com");
+        assert!(changes[0].previous_route.is_none());
         assert_eq!(changes[0].next_position, Some(1));
+        assert_eq!(changes[1].domain, "example.com");
         assert_eq!(changes[1].previous_route.as_deref(), Some("vpn"));
         assert_eq!(changes[1].next_route.as_deref(), Some("direct"));
-        assert!(changes[2].previous_route.is_none());
-        assert!(changes[3].next_route.is_none());
-        assert!(changes[3].domain.starts_with("xn--"));
+        assert!(changes[2].next_route.is_none());
+        assert!(changes[2].domain.starts_with("xn--"));
         let mut p = fixture_profile();
         p.rules = rules(&[("example.com", "vpn")]);
         let options:Options=serde_json::from_value(serde_json::json!({"rules":[{"domain":"example.com","route":"direct"}],"connect_after":false})).unwrap();
@@ -1368,7 +1380,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut after = before.clone();
         after.reverse();
-        assert_eq!(rule_changes(&before, &after).unwrap().len(), 5000);
+        assert!(rule_changes(&before, &after).unwrap().is_empty());
     }
     #[test]
     fn preview_reports_actual_scope_and_never_silently_upgrades_or_downgrades_it() {

@@ -145,23 +145,67 @@ fn explicit_rules_override_tld() {
     )
 }
 #[test]
-fn global_modes_override_rules() {
-    let rules = vec![Rule {
-        domain: "github.com".into(),
-        route: "direct".into(),
-    }];
-    assert_eq!(
-        routing::decide("github.com", &Mode::Vpn, &rules)
-            .unwrap()
-            .route,
-        "vpn"
-    );
-    assert_eq!(
-        routing::decide("youtube.com", &Mode::Direct, &rules)
-            .unwrap()
-            .route,
-        "direct"
-    );
+fn explicit_rules_override_all_mode_defaults() {
+    let rules = vec![
+        Rule {
+            domain: "github.com".into(),
+            route: "direct".into(),
+        },
+        Rule {
+            domain: "bank.ru".into(),
+            route: "vpn".into(),
+        },
+    ];
+    for mode in [Mode::Smart, Mode::Custom, Mode::Vpn, Mode::Direct] {
+        assert_eq!(
+            routing::decide("github.com", &mode, &rules).unwrap().route,
+            "direct"
+        );
+        assert_eq!(
+            routing::decide("bank.ru", &mode, &rules).unwrap().route,
+            "vpn"
+        );
+    }
+}
+#[test]
+fn exact_and_more_specific_rules_win_independent_of_insertion_order() {
+    let mut rules = vec![
+        Rule {
+            domain: "*.example.com".into(),
+            route: "direct".into(),
+        },
+        Rule {
+            domain: "*.private.example.com".into(),
+            route: "vpn".into(),
+        },
+        Rule {
+            domain: "LOGIN.private.example.com.".into(),
+            route: "direct".into(),
+        },
+    ];
+    for _ in 0..2 {
+        for mode in [Mode::Smart, Mode::Custom, Mode::Vpn, Mode::Direct] {
+            assert_eq!(
+                routing::decide("a.example.com", &mode, &rules)
+                    .unwrap()
+                    .route,
+                "direct"
+            );
+            assert_eq!(
+                routing::decide("a.private.example.com", &mode, &rules)
+                    .unwrap()
+                    .route,
+                "vpn"
+            );
+            assert_eq!(
+                routing::decide("login.private.example.com", &mode, &rules)
+                    .unwrap()
+                    .route,
+                "direct"
+            );
+        }
+        rules.reverse();
+    }
 }
 #[test]
 fn reject_duplicate_rules_after_idn_normalization() {

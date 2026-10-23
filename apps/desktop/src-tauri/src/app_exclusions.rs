@@ -153,24 +153,102 @@ pub async fn pick_macos_app(app: tauri::AppHandle) -> Result<Option<Application>
 }
 
 #[tauri::command]
+pub async fn pick_windows_app(app: tauri::AppHandle) -> Result<Option<Application>, String> {
+    #[cfg(windows)]
+    {
+        use tauri_plugin_dialog::DialogExt;
+        tauri::async_runtime::spawn_blocking(move || {
+            let _dialog = super::file_actions::DialogGuard::acquire()?;
+            let Some(file) = app
+                .dialog()
+                .file()
+                .set_title("Выберите программу без VPN")
+                .add_filter("Программа Windows", &["exe"])
+                .blocking_pick_file()
+            else {
+                return Ok(None);
+            };
+            windows_application(
+                &file
+                    .into_path()
+                    .map_err(|_| "Не удалось выбрать программу")?,
+            )
+            .map(Some)
+        })
+        .await
+        .map_err(|_| "Не удалось выбрать программу")?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("Выбор .exe доступен в Windows".into())
+    }
+}
+#[cfg(windows)]
+fn windows_application(path: &std::path::Path) -> Result<Application, String> {
+    let canonical = path.canonicalize().map_err(|_| "Программа не найдена")?;
+    if !canonical.is_file() {
+        return Err("Выберите файл .exe".into());
+    }
+    if std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .as_ref()
+        == Some(&canonical)
+    {
+        return Err("foxVPN нельзя добавить в собственные исключения".into());
+    }
+    let path = canonical
+        .to_str()
+        .ok_or("Неподдерживаемый путь программы")?
+        .strip_prefix(r"\\?\")
+        .unwrap_or_else(|| canonical.to_str().unwrap_or_default())
+        .to_owned();
+    let application = Application {
+        name: canonical
+            .file_stem()
+            .and_then(|v| v.to_str())
+            .ok_or("Неверное имя программы")?
+            .to_owned(),
+        path,
+    };
+    app_routes::validate_windows(std::slice::from_ref(&application))?;
+    Ok(application)
+}
+fn validate_native(apps: &[Application]) -> Result<(), String> {
+    if cfg!(windows) {
+        app_routes::validate_windows(apps)
+    } else {
+        app_routes::validate(apps)
+    }
+}
+fn selected_apps(settings: &mut smart_vpn_engine::settings::Settings) -> &mut Vec<Application> {
+    if cfg!(windows) {
+        &mut settings.windows_excluded_apps
+    } else {
+        &mut settings.excluded_apps
+    }
+}
+
+#[tauri::command]
 pub async fn save_app_exclusions(
     apps: Vec<Application>,
     expected: Vec<Application>,
     s: tauri::State<'_, State>,
 ) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("Исключения приложений доступны только в macOS".into());
+    if !cfg!(any(target_os = "macos", windows)) {
+        return Err("Исключения приложений доступны в macOS и Windows".into());
     }
-    app_routes::validate(&apps)?;
-    app_routes::validate(&expected)?;
+    validate_native(&apps)?;
+    validate_native(&expected)?;
     let state = s.inner().clone();
     tauri::async_runtime::spawn_blocking(move || save(apps, expected, &state))
         .await
         .map_err(|_| "Не удалось сохранить исключения")?
 }
 fn save(apps: Vec<Application>, expected: Vec<Application>, state: &State) -> Result<(), String> {
-    app_routes::validate(&apps)?;
-    app_routes::validate(&expected)?;
+    validate_native(&apps)?;
+    validate_native(&expected)?;
     edit(state, |profile| {
         if state.wanted.pending(state.wanted.ticket())
             || state
@@ -187,18 +265,18 @@ fn save(apps: Vec<Application>, expected: Vec<Application>, state: &State) -> Re
         {
             return Err("Сначала отключите VPN, затем сохраните исключения".into());
         }
-        if profile.settings.excluded_apps != expected {
+        if *selected_apps(&mut profile.settings) != expected {
             return Err(
                 "Исключения изменились в другом окне. Отмените местные изменения и повторите выбор"
                     .into(),
             );
         }
-        profile.settings.excluded_apps = apps;
+        *selected_apps(&mut profile.settings) = apps;
         Ok(())
     })
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 mod tests {
     use super::*;
     fn fixture(path: std::path::PathBuf) -> State {
@@ -221,7 +299,11 @@ mod tests {
     fn selected() -> Application {
         Application {
             name: "Windows App".into(),
-            path: "/Applications/Windows App.app".into(),
+            path: if cfg!(windows) {
+                r"C:\Apps\Windows App.exe".into()
+            } else {
+                "/Applications/Windows App.app".into()
+            },
         }
     }
     #[test]
@@ -234,22 +316,16 @@ mod tests {
         })
         .unwrap();
         save(vec![selected()], vec![], &state).unwrap();
-        let stored = state.vault.load().unwrap();
-        assert_eq!(stored.settings.excluded_apps, vec![selected()]);
+        let mut stored = state.vault.load().unwrap();
+        assert_eq!(*selected_apps(&mut stored.settings), vec![selected()]);
         assert_eq!(stored.settings.dns_provider, "quad9");
         assert!(save(vec![], vec![], &state).is_err());
         assert_eq!(
-            state.vault.load().unwrap().settings.excluded_apps,
+            *selected_apps(&mut state.vault.load().unwrap().settings),
             vec![selected()]
         );
         save(vec![], vec![selected()], &state).unwrap();
-        assert!(state
-            .vault
-            .load()
-            .unwrap()
-            .settings
-            .excluded_apps
-            .is_empty());
+        assert!(selected_apps(&mut state.vault.load().unwrap().settings).is_empty());
     }
     #[test]
     fn saving_exclusions_is_blocked_for_active_pending_and_concurrent_disk_changes() {
@@ -265,10 +341,11 @@ mod tests {
         latest.settings.dns_provider = "google".into();
         state.vault.save(&latest).unwrap();
         assert!(save(vec![selected()], vec![], &state).is_err());
-        let stored = state.vault.load().unwrap();
+        let mut stored = state.vault.load().unwrap();
         assert_eq!(stored.settings.dns_provider, "google");
-        assert!(stored.settings.excluded_apps.is_empty());
+        assert!(selected_apps(&mut stored.settings).is_empty());
     }
+    #[cfg(target_os = "macos")]
     #[test]
     fn native_catalog_validates_public_binary_plist_without_launching_it() {
         // A public synthetic bundle also covers spaces and binary Info.plist.

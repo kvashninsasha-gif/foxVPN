@@ -52,7 +52,7 @@ fn bundle_scope_is_bounded_escaped_and_preserved_in_profile_digest() {
 }
 
 #[test]
-fn only_mac_tun_applies_app_exclusions_before_domain_rules_without_bypassing_dns() {
+fn explicit_domain_rules_precede_mac_app_exclusions_without_bypassing_dns() {
     let server =
         Server::parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls")
             .unwrap();
@@ -70,9 +70,11 @@ fn only_mac_tun_applies_app_exclusions_before_domain_rules_without_bypassing_dns
         if cfg!(target_os = "macos") {
             assert_eq!(cfg["route"]["find_process"], true);
             assert_eq!(cfg["route"]["rules"][1]["action"], "hijack-dns");
-            assert_eq!(cfg["route"]["rules"][2]["outbound"], "direct");
+            assert_eq!(cfg["route"]["rules"][2]["outbound"], "vpn");
+            assert_eq!(cfg["route"]["rules"][2]["domain"][0], "example.com");
+            assert_eq!(cfg["route"]["rules"][3]["outbound"], "direct");
             assert_eq!(
-                cfg["route"]["rules"][2]["process_path_regex"][0],
+                cfg["route"]["rules"][3]["process_path_regex"][0],
                 r"^/Applications/Windows App\.app/"
             );
         } else {
@@ -383,4 +385,42 @@ fn public_app_udp_client() {
     let mut buf = [0; 64];
     let size = socket.recv(&mut buf).unwrap();
     assert_eq!(&buf[..size], b"APP-DIRECT");
+}
+
+#[test]
+fn windows_exe_paths_are_portable_exact_and_validated() {
+    use smart_vpn_engine::app_routes::{validate_windows, windows_pattern};
+    let selected = app(r"C:\Program Files\Browser\browser.exe");
+    validate_windows(std::slice::from_ref(&selected)).unwrap();
+    assert_eq!(
+        windows_pattern(&selected),
+        r"(?i)^C:\\Program Files\\Browser\\browser\.exe$"
+    );
+    let mut profile = Profile::default();
+    profile
+        .settings
+        .windows_excluded_apps
+        .push(selected.clone());
+    let copied: Profile = serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
+    assert_eq!(
+        copied.settings.windows_excluded_apps,
+        vec![selected.clone()]
+    );
+    assert!(Settings::default().windows_excluded_apps.is_empty());
+    let mut duplicate = selected.clone();
+    duplicate.path = duplicate.path.to_lowercase();
+    assert!(validate_windows(&[selected, duplicate]).is_err());
+    for path in [
+        r"browser.exe",
+        r"C:browser.exe",
+        r"\\server\app.exe",
+        r"C:\Apps\..\app.exe",
+        r"C:\Apps\app.exe:stream",
+        r"C:\Apps\*.exe",
+        r"C:\Apps\app.exe\",
+        r"C:\Apps\app.app",
+        r"C:\Apps.\app.exe",
+    ] {
+        assert!(validate_windows(&[app(path)]).is_err(), "{path}");
+    }
 }

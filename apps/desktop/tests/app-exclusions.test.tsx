@@ -46,3 +46,16 @@ it('native picker cancellation keeps selections and duplicate choice never adds 
  await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('pick_macos_app'));
  expect(screen.queryByRole('button',{name:'Сохранить исключения'})).toBeNull();expect(save).not.toHaveBeenCalled();
 });
+
+it('Windows chooses exe natively without scanning Mac apps and explains proxy scope',async()=>{
+ const exe={name:'Browser',path:'C:\\Apps\\browser.exe'};const save=vi.fn(async()=>{});
+ ipc.invoke.mockResolvedValue(exe);
+ render(<ApplicationExclusions platform="windows" apps={[]} visible locked={false} tun={false} onSave={save}/>);
+ expect(screen.getByText(/к локальному прокси foxVPN/)).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'Добавить приложение'}));
+ await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('pick_windows_app'));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ fireEvent.click(await screen.findByRole('button',{name:'Сохранить исключения'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledWith([exe],[]));
+ expect(ipc.invoke).not.toHaveBeenCalledWith('list_macos_apps');
+});

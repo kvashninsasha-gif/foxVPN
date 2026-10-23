@@ -1477,6 +1477,7 @@ fn main() {
             save_settings,
             app_exclusions::list_macos_apps,
             app_exclusions::pick_macos_app,
+            app_exclusions::pick_windows_app,
             app_exclusions::save_app_exclusions,
             set_metric_settings,
             check_route,
