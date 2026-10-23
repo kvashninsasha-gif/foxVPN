@@ -20,13 +20,42 @@ pub struct Decision {
     pub reason: String,
 }
 pub fn normalize(input: &str) -> Result<String, String> {
-    let value = input.trim().trim_end_matches('.').to_lowercase();
+    let input = input.trim();
+    if input.chars().any(char::is_control) {
+        return Err(crate::text("message_256").into());
+    }
+    let value = if input.contains("://") {
+        let url = url::Url::parse(input).map_err(|_| crate::text("message_257"))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(crate::text("message_256").into());
+        }
+        match url
+            .host()
+            .ok_or_else(|| crate::text("message_257").to_string())?
+        {
+            url::Host::Ipv4(ip) => return Ok(ip.to_string()),
+            url::Host::Ipv6(ip) => return Ok(ip.to_string()),
+            url::Host::Domain(domain) => domain.trim_end_matches('.').to_lowercase(),
+        }
+    } else {
+        input.trim_end_matches('.').to_lowercase()
+    };
+    let ip_literal = value
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(&value);
+    if let Ok(ip) = ip_literal.parse::<std::net::IpAddr>() {
+        return Ok(ip.to_string());
+    }
     if value.is_empty() || value.contains('/') || value.contains(':') || value.contains('@') {
         return Err(crate::text("message_256").into());
     }
     let host = url::Host::parse(&value).map_err(|_| crate::text("message_257"))?;
     if !matches!(host, url::Host::Domain(_)) {
-        return Err(crate::text("message_258").into());
+        return Err(crate::text("message_257").into());
     }
     let domain = host.to_string();
     if domain.len() > 253
@@ -49,6 +78,9 @@ pub fn validate(rules: &[Rule]) -> Result<(), String> {
             return Err(crate::text("message_259").into());
         }
         let d = normalize(r.domain.strip_prefix("*.").unwrap_or(&r.domain))?;
+        if r.domain.starts_with("*.") && d.parse::<std::net::IpAddr>().is_ok() {
+            return Err(crate::text("message_257").into());
+        }
         let key = (r.domain.starts_with("*."), d);
         if !seen.insert(key) {
             return Err(crate::text("message_260").into());
@@ -91,6 +123,16 @@ pub fn decide(input: &str, mode: &Mode, rules: &[Rule]) -> Result<Decision, Stri
             reason: crate::text("custom_rule_reason").replace("{domain}", &r.domain),
         });
     }
+    if domain
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(is_local_address)
+    {
+        return Ok(Decision {
+            domain,
+            route: "direct".into(),
+            reason: "Локальная сеть: напрямую".into(),
+        });
+    }
     let (route, reason) = match mode {
         Mode::Vpn => ("vpn", crate::text("message_261")),
         Mode::Direct => ("direct", crate::text("message_262")),
@@ -108,4 +150,20 @@ pub fn decide(input: &str, mode: &Mode, rules: &[Rule]) -> Result<Decision, Stri
         route: route.into(),
         reason: reason.into(),
     })
+}
+
+/// Local LAN ranges only. Explicit user rules always precede this default.
+/// Loopback and the broad set of reserved/special-use addresses are not included.
+pub const LOCAL_NETWORKS: &[&str] = &[
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "fc00::/7",
+    "fe80::/10",
+];
+pub fn is_local_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => ip.is_private(),
+        std::net::IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+    }
 }

@@ -22,6 +22,9 @@ fn hide_console(command: &mut Command) {
 }
 pub fn domain_match(r: &Rule) -> Value {
     let d = normalize(r.domain.strip_prefix("*.").unwrap_or(&r.domain)).unwrap();
+    if let Ok(ip) = d.parse::<std::net::IpAddr>() {
+        return json!({"ip_cidr":[format!("{ip}/{}", if ip.is_ipv4() {32} else {128})]});
+    }
     if r.domain.starts_with("*.") {
         json!({"domain_regex":[format!("^.+\\.{}$",d.replace('.',"\\."))]})
     } else {
@@ -92,6 +95,9 @@ pub fn config(
         item["action"] = json!("route");
         item["outbound"] = json!(r.route);
         route.push(item);
+        if normalize(&r.domain).is_ok_and(|d| d.parse::<std::net::IpAddr>().is_ok()) {
+            continue;
+        }
         let mut item = domain_match(r);
         item["action"] = json!("route");
         item["server"] = json!(if r.route == "direct" {
@@ -107,6 +113,9 @@ pub fn config(
     if windows_exclusions {
         route.push(json!({"process_path_regex":settings.windows_excluded_apps.iter().map(crate::app_routes::windows_pattern).collect::<Vec<_>>(),"action":"route","outbound":"direct"}));
     }
+    route.push(
+        json!({"ip_cidr":crate::routing::LOCAL_NETWORKS,"action":"route","outbound":"direct"}),
+    );
     if settings.mode == Mode::Smart {
         route.push(
             json!({"domain_suffix":["ru","su","xn--p1ai"],"action":"route","outbound":"direct"}),

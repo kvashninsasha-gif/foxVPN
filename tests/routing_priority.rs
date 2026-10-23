@@ -182,3 +182,97 @@ fn actual_windows_core_matches_only_selected_exe_and_respects_explicit_domain_ru
         "explicit VPN must override executable exclusion"
     );
 }
+
+#[test]
+fn actual_router_ip_rules_and_local_network_default_respect_explicit_vpn() {
+    use std::process::{Command, Stdio};
+    let Ok(binary) = std::env::var("SMARTVPN_TEST_CORE") else {
+        return;
+    };
+    let http = HttpFixture::new();
+    let server = offline_server();
+    // Actual IP-literal rule (including pasted URL) without any LAN access.
+    for route in ["direct", "vpn"] {
+        let settings = Settings {
+            mode: Mode::Direct,
+            tun: false,
+            kill_switch: false,
+            ..Default::default()
+        };
+        let rules = vec![Rule {
+            domain: format!("http://127.0.0.1:{}/webpages/index.html#/login", http.port),
+            route: route.into(),
+        }];
+        let core =
+            CoreProcess::start(std::path::Path::new(&binary), &server, &settings, &rules).unwrap();
+        let result = fetch(core.proxy_port, &format!("http://127.0.0.1:{}/", http.port));
+        assert_eq!(result.is_ok(), route == "direct");
+    }
+    // Redirect the matched LAN destination to a disposable loopback fixture.
+    // Neither the user's router nor any physical interface is contacted/changed.
+    struct FixtureCore(std::process::Child);
+    impl Drop for FixtureCore {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    for force_vpn in [false, true] {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        drop(proxy);
+        let settings = Settings {
+            mode: Mode::Vpn,
+            tun: false,
+            kill_switch: false,
+            ..Default::default()
+        };
+        let rules = if force_vpn {
+            vec![Rule {
+                domain: "192.168.0.1".into(),
+                route: "vpn".into(),
+            }]
+        } else {
+            vec![]
+        };
+        let mut cfg =
+            smart_vpn_engine::vpn::config(&server, &settings, &rules, port, 0, "fixture").unwrap();
+        cfg.as_object_mut().unwrap().remove("experimental");
+        let lan = cfg["route"]["rules"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|r| {
+                r["ip_cidr"]
+                    .as_array()
+                    .is_some_and(|v| v.contains(&serde_json::json!("192.168.0.0/16")))
+            })
+            .unwrap();
+        lan["override_address"] = serde_json::json!("127.0.0.1");
+        lan["override_port"] = serde_json::json!(http.port);
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("public-fixture.json");
+        std::fs::write(&config, serde_json::to_vec(&cfg).unwrap()).unwrap();
+        let _core = FixtureCore(
+            Command::new(&binary)
+                .args(["run", "-c"])
+                .arg(config)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        for _ in 0..60 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let result = fetch(port, "http://192.168.0.1/webpages/index.html#/login");
+        if force_vpn {
+            assert!(result.is_err(), "explicit VPN must precede local default");
+        } else {
+            assert_eq!(result.unwrap(), "DIRECT");
+        }
+    }
+}

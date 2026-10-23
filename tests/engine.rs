@@ -224,14 +224,12 @@ fn reject_duplicate_rules_after_idn_normalization() {
 #[test]
 fn reject_host_injection() {
     for input in [
-        "https://example.com",
         "example.com/path",
         "example.com:443",
         "x@host",
         "*.example.com",
         "foo_bar.com",
         "-bad.ru",
-        "127.0.0.1",
         "bad..ru",
     ] {
         assert!(routing::normalize(input).is_err(), "{input}")
@@ -456,4 +454,51 @@ fn recovery_reserves_obey_strategy_favorites_and_retry_failed_endpoints() {
     settings.favorites_only = false;
     settings.strategy = "stability".into();
     assert_eq!(latency::recovery_order(&servers, &a.id, &settings).len(), 3);
+}
+
+#[test]
+fn router_ip_and_pasted_url_rules_are_canonical_and_override_lan_defaults() {
+    let full = "http://192.168.0.1/webpages/index.html#/login";
+    assert_eq!(routing::normalize(full).unwrap(), "192.168.0.1");
+    assert_eq!(
+        routing::normalize("https://[fd00::1]:8443/path").unwrap(),
+        "fd00::1"
+    );
+    for mode in [Mode::Smart, Mode::Custom, Mode::Vpn, Mode::Direct] {
+        assert_eq!(routing::decide(full, &mode, &[]).unwrap().route, "direct");
+        let rules = vec![Rule {
+            domain: full.into(),
+            route: "vpn".into(),
+        }];
+        routing::validate(&rules).unwrap();
+        assert_eq!(
+            routing::decide("192.168.0.1", &mode, &rules).unwrap().route,
+            "vpn"
+        );
+        assert_eq!(vpn::domain_match(&rules[0])["ip_cidr"][0], "192.168.0.1/32");
+    }
+    assert!(routing::validate(&[
+        Rule {
+            domain: full.into(),
+            route: "direct".into()
+        },
+        Rule {
+            domain: "192.168.0.1".into(),
+            route: "vpn".into()
+        }
+    ])
+    .is_err());
+    assert!(routing::validate(&[Rule {
+        domain: "*.192.168.0.1".into(),
+        route: "direct".into()
+    }])
+    .is_err());
+    for bad in [
+        "http://user:password@192.168.0.1/",
+        "file:///etc/passwd",
+        "javascript://192.168.0.1",
+        "192.168.0.1/24",
+    ] {
+        assert!(routing::normalize(bad).is_err(), "{bad}");
+    }
 }
