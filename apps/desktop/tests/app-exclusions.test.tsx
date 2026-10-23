@@ -30,7 +30,7 @@ it('keeps pending selection across tabs and rejects discarding the expected base
  fireEvent.click(screen.getByRole('button',{name:'Отменить изменения исключений'}));
  expect(screen.getByText(other.path)).toBeTruthy();expect(screen.queryByText(app.path)).toBeNull();
 });
-it('locks modifications during VPN and explains inactive proxy mode',()=>{
+it('locks modifications during another operation and explains inactive proxy mode',()=>{
  render(<ApplicationExclusions apps={[app]} visible locked tun={false} onSave={vi.fn()}/>);
  expect(screen.getByRole('button',{name:'Добавить приложение'}).hasAttribute('disabled')).toBe(true);
  expect(screen.getByRole('button',{name:'Убрать Windows App из исключений'}).hasAttribute('disabled')).toBe(true);

@@ -17,7 +17,7 @@ afterEach(cleanup);
 async function ready(){render(<App/>);await screen.findByText('Тестовый сервер');}
 describe('connection setup regression',()=>{
  it('Windows overview presents connection before proxy support and offers exe exclusions',async()=>{
-  snapshot.platform='windows';
+  snapshot.platform='windows';snapshot.status='connected';snapshot.connection_plan='ready';
   const original=ipc.invoke.getMockImplementation()!;
   const exe={name:'Browser',path:'C:\\Apps\\browser.exe'};
   ipc.invoke.mockImplementation(async(command:string,args:any)=>{
@@ -35,7 +35,7 @@ describe('connection setup regression',()=>{
   await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('save_app_exclusions',{apps:[exe],expected:[]}));
  });
  it('Mac routing saves selected apps separately and preserves unrelated preferences',async()=>{
-  snapshot.platform='macos';snapshot.helper_available=true;const original=ipc.invoke.getMockImplementation()!;
+  snapshot.platform='macos';snapshot.helper_available=true;snapshot.status='connected';snapshot.connection_plan='ready';const original=ipc.invoke.getMockImplementation()!;
   const app={name:'Windows App',path:'/Applications/Windows App.app'};
   ipc.invoke.mockImplementation(async(command:string,args:any)=>{
    if(command==='list_macos_apps')return [app];
@@ -330,4 +330,70 @@ it('ignores a connect snapshot already in flight when cancellation confirms firs
  await screen.findByRole('button',{name:'Подключиться',exact:true});
  expect(screen.queryByRole('button',{name:'Отключиться',exact:true})).toBeNull();
  expect(screen.queryByText('127.0.0.1:2080')).toBeNull();
+});
+
+describe.each(['macos','windows'] as const)('active routing on %s',platform=>{
+ it('saves routes and changes mode while connected, preserving unrelated preferences',async()=>{
+  snapshot.platform=platform;snapshot.status='connected';snapshot.connection_plan='ready';
+  const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{
+   if(command==='save_rules'){snapshot.profile.rules=args.rules;return;}
+   if(command==='set_routing_mode'){snapshot.profile.settings.mode=args.mode;return;}
+   return original(command,args);
+  });
+  await ready();fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
+  fireEvent.change(screen.getAllByRole('textbox',{name:ru.domain})[0],{target:{value:'192.168.0.1'}});
+  fireEvent.click(screen.getByRole('button',{name:'Добавить правило',exact:true}));
+  fireEvent.click(screen.getByRole('button',{name:'Сохранить',exact:true}));
+  await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('save_rules',{rules:[{domain:'192.168.0.1',route:'vpn'}],expected:[]}));
+  await screen.findByText('Правила сохранены');
+  fireEvent.click(screen.getByRole('button',{name:'Обзор',exact:true}));
+  const mode=document.querySelectorAll<HTMLButtonElement>('.mode-card')[1];
+  expect(mode.disabled).toBe(false);fireEvent.click(mode);
+  await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('set_routing_mode',{mode:'vpn',expected:'smart'}));
+  expect(snapshot.status).toBe('connected');expect(snapshot.profile.settings.dns_provider).toBe('cloudflare');
+  expect(ipc.invoke.mock.calls.some(([c])=>['save_settings','connect','stop'].includes(c))).toBe(false);
+ });
+ it('allows Stop during a pending route replacement and keeps the draft after cancellation',async()=>{
+  snapshot.platform=platform;snapshot.status='connected';snapshot.connection_plan='ready';
+  const pending=deferred();const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation((command:string,args:any)=>{
+   if(command==='save_rules')return pending.promise;
+   if(command==='stop'){snapshot.status='disconnected';return Promise.resolve();}
+   return original(command,args);
+  });
+  await ready();fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
+  fireEvent.change(screen.getAllByRole('textbox',{name:ru.domain})[0],{target:{value:'example.com'}});
+  fireEvent.click(screen.getByRole('button',{name:'Добавить правило',exact:true}));
+  fireEvent.click(screen.getByRole('button',{name:'Сохранить',exact:true}));
+  await screen.findByText('Применяем маршруты…');
+  fireEvent.click(screen.getByRole('button',{name:'Отключиться',exact:true}));
+  await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('stop',undefined));
+  await act(async()=>{pending.reject(new Error('Изменение маршрутов отменено'));await Promise.resolve()});
+  await screen.findByText('Изменение маршрутов отменено');
+  expect(screen.getByText('example.com')).toBeTruthy();
+  expect(screen.queryByText('Правила сохранены')).toBeNull();
+  expect(snapshot.profile.rules).toEqual([]);expect(snapshot.status).toBe('disconnected');
+ });
+});
+it('keeps the original rule baseline when a newer snapshot arrives during editing',async()=>{
+ let update:((e:{payload:string})=>void)|undefined;
+ ipc.listen.mockImplementation(async(event:string,callback:any)=>{if(event==='metrics-updated')update=callback;return()=>{}});
+ const original=ipc.invoke.getMockImplementation()!;
+ ipc.invoke.mockImplementation(async(command:string,args:any)=>{
+  if(command==='save_rules')throw new Error('Маршруты изменились в другом окне');
+  return original(command,args);
+ });
+ await ready();await waitFor(()=>expect(update).toBeDefined());
+ fireEvent.click(screen.getAllByRole('button',{name:'Маршрутизация',exact:true})[0]);
+ fireEvent.change(screen.getAllByRole('textbox',{name:ru.domain})[0],{target:{value:'draft.example'}});
+ fireEvent.click(screen.getByRole('button',{name:'Добавить правило',exact:true}));
+ snapshot.profile.rules=[{domain:'other.example',route:'direct'}];
+ await act(async()=>{update!({payload:''});await Promise.resolve()});
+ fireEvent.click(screen.getByRole('button',{name:'Сохранить',exact:true}));
+ await screen.findByText('Маршруты изменились в другом окне');
+ expect(ipc.invoke).toHaveBeenCalledWith('save_rules',{rules:[{domain:'draft.example',route:'vpn'}],expected:[]});
+ expect(snapshot.profile.rules[0].domain).toBe('other.example');expect(screen.getByText('draft.example')).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'Отменить изменения правил'}));
+ expect(screen.getByText('other.example')).toBeTruthy();
 });

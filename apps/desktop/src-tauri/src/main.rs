@@ -12,6 +12,7 @@ mod mac_gui_rollback;
 mod metrics;
 #[cfg(any(target_os = "macos", test))]
 mod network_cli;
+mod routing_update;
 mod setup_check;
 mod setup_plan;
 mod setup_recovery;
@@ -464,27 +465,28 @@ fn server_uri(id: String, s: tauri::State<State>) -> Result<String, String> {
         .and_then(|v| v.uri())
 }
 #[tauri::command]
-fn save_rules(mut rules: Vec<Rule>, s: tauri::State<State>) -> Result<(), String> {
-    if s.core.lock().unwrap().is_some() {
-        return Err(smart_vpn_engine::text("message_318").into());
-    }
-    routing::validate(&rules)?;
-    for rule in &mut rules {
-        let wildcard = rule.domain.starts_with("*.");
-        let target = routing::normalize(rule.domain.strip_prefix("*.").unwrap_or(&rule.domain))?;
-        rule.domain = if wildcard {
-            format!("*.{target}")
-        } else {
-            target
-        };
-    }
-    edit(&s, |p| {
-        if s.core.lock().unwrap().is_some() {
-            return Err(smart_vpn_engine::text("disconnect_first").into());
-        }
-        p.rules = rules;
-        Ok(())
-    })
+async fn save_rules(
+    rules: Vec<Rule>,
+    expected: Vec<Rule>,
+    s: tauri::State<'_, State>,
+) -> Result<(), String> {
+    routing_update::dispatch(
+        s.inner().clone(),
+        routing_update::Change::Rules { rules, expected },
+    )
+    .await
+}
+#[tauri::command]
+async fn set_routing_mode(
+    mode: routing::Mode,
+    expected: routing::Mode,
+    s: tauri::State<'_, State>,
+) -> Result<(), String> {
+    routing_update::dispatch(
+        s.inner().clone(),
+        routing_update::Change::Mode { mode, expected },
+    )
+    .await
 }
 #[tauri::command]
 fn set_metric_settings(
@@ -1483,6 +1485,7 @@ fn main() {
             rename_server,
             server_uri,
             save_rules,
+            set_routing_mode,
             save_settings,
             app_exclusions::list_macos_apps,
             app_exclusions::pick_macos_app,

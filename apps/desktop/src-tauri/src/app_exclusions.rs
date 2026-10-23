@@ -1,6 +1,6 @@
 //! Native app discovery/picker. The WebView cannot provide filesystem paths to
 //! read; only validated bundle metadata is returned, and nothing is launched.
-use super::{edit, State};
+use super::State;
 use smart_vpn_engine::app_routes::{self, Application};
 
 #[cfg(target_os = "macos")]
@@ -215,13 +215,7 @@ fn windows_application(path: &std::path::Path) -> Result<Application, String> {
     app_routes::validate_windows(std::slice::from_ref(&application))?;
     Ok(application)
 }
-fn validate_native(apps: &[Application]) -> Result<(), String> {
-    if cfg!(windows) {
-        app_routes::validate_windows(apps)
-    } else {
-        app_routes::validate(apps)
-    }
-}
+#[cfg(test)]
 fn selected_apps(settings: &mut smart_vpn_engine::settings::Settings) -> &mut Vec<Application> {
     if cfg!(windows) {
         &mut settings.windows_excluded_apps
@@ -236,44 +230,19 @@ pub async fn save_app_exclusions(
     expected: Vec<Application>,
     s: tauri::State<'_, State>,
 ) -> Result<(), String> {
-    if !cfg!(any(target_os = "macos", windows)) {
-        return Err("Исключения приложений доступны в macOS и Windows".into());
-    }
-    validate_native(&apps)?;
-    validate_native(&expected)?;
-    let state = s.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || save(apps, expected, &state))
-        .await
-        .map_err(|_| "Не удалось сохранить исключения")?
+    super::routing_update::dispatch(
+        s.inner().clone(),
+        super::routing_update::Change::Apps { apps, expected },
+    )
+    .await
 }
+#[cfg(test)]
 fn save(apps: Vec<Application>, expected: Vec<Application>, state: &State) -> Result<(), String> {
-    validate_native(&apps)?;
-    validate_native(&expected)?;
-    edit(state, |profile| {
-        if state.wanted.pending(state.wanted.ticket())
-            || state
-                .core
-                .lock()
-                .map_err(|_| "Не удалось проверить подключение")?
-                .is_some()
-            || state
-                .status
-                .lock()
-                .map_err(|_| "Не удалось проверить подключение")?
-                .as_str()
-                != "disconnected"
-        {
-            return Err("Сначала отключите VPN, затем сохраните исключения".into());
-        }
-        if *selected_apps(&mut profile.settings) != expected {
-            return Err(
-                "Исключения изменились в другом окне. Отмените местные изменения и повторите выбор"
-                    .into(),
-            );
-        }
-        *selected_apps(&mut profile.settings) = apps;
-        Ok(())
-    })
+    super::routing_update::apply(
+        state,
+        super::routing_update::Change::Apps { apps, expected },
+        state.wanted.ticket(),
+    )
 }
 
 #[cfg(all(test, any(target_os = "macos", windows)))]
@@ -310,7 +279,7 @@ mod tests {
     fn saving_exclusions_preserves_settings_and_rejects_stale_selection() {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture(dir.path().join("profile.enc"));
-        super::edit(&state, |profile| {
+        crate::edit(&state, |profile| {
             profile.settings.dns_provider = "quad9".into();
             Ok(())
         })

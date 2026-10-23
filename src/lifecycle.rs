@@ -78,6 +78,33 @@ impl ConnectionIntent {
             }
         }
     }
+    /// Mark a routing replacement without creating a new user connection intent.
+    pub fn begin_update(&self, ticket: u64) -> Result<(), String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| crate::text("connection_cancelled"))?;
+        if state.ticket != ticket || !state.wanted || state.pending || state.closing {
+            return Err(crate::text("connection_cancelled").into());
+        }
+        state.pending = true;
+        Ok(())
+    }
+    /// Keep Stop/Connect serialized with the final durable configuration commit.
+    pub fn with_current<T>(
+        &self,
+        ticket: u64,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let state = self
+            .0
+            .lock()
+            .map_err(|_| crate::text("connection_cancelled"))?;
+        if state.ticket != ticket || state.closing {
+            return Err(crate::text("connection_cancelled").into());
+        }
+        action()
+    }
     pub fn pending(&self, ticket: u64) -> bool {
         self.0.lock().is_ok_and(|s| s.ticket == ticket && s.pending)
     }
@@ -169,6 +196,26 @@ mod tests {
         let startup = ConnectionIntent::default();
         startup.cancel();
         assert!(startup.request_startup().is_none());
+    }
+    #[test]
+    fn routing_update_uses_existing_ticket_and_stop_invalidates_commit() {
+        let intent = ConnectionIntent::default();
+        let ticket = intent.request().unwrap();
+        assert!(intent.begin_update(ticket).is_err());
+        intent.finish_current(ticket);
+        intent.begin_update(ticket).unwrap();
+        assert!(intent.pending(ticket));
+        assert_eq!(intent.ticket(), ticket);
+        intent.cancel();
+        assert!(intent.with_current(ticket, || Ok(())).is_err());
+        intent.finish_current(ticket);
+        assert!(!intent.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(intent.begin_update(intent.ticket()).is_err());
+        let ticket = intent.request().unwrap();
+        intent.finish_current(ticket);
+        intent.with_current(ticket, || Ok(37)).unwrap();
+        intent.close();
+        assert!(intent.with_current(intent.ticket(), || Ok(())).is_err());
     }
     #[test]
     fn retries_back_off_and_success_or_cancel_resets_the_deadline() {
