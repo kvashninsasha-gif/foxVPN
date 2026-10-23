@@ -1,11 +1,11 @@
 {
-  "version": "0.1.30",
-  "notes": "В macOS добавлен выбор приложений без VPN: Маршрутизация → Приложения без VPN. Выберите Windows App или другую программу, сохраните список при отключённом VPN и подключитесь снова. Системный DNS остаётся защищённым. Обновлены компоненты проверки TLS; профили и настройки сохраняются.",
-  "pub_date": "2026-10-22T08:41:05.244510Z",
+  "version": "0.1.31",
+  "notes": "В foxVPN 0.1.31 исправлены приоритеты маршрутов и порядок главной страницы.\n\n- Кнопка подключения и состояние соединения теперь находятся выше блока настройки прокси Windows.\n- Сохранённые правила сайтов действуют во всех четырёх режимах. Точный домен важнее маски, более конкретная маска важнее общей. Правило сайта имеет приоритет перед исключением программы. DNS-правила используют тот же порядок. Маршрут «Через VPN» при ошибке не заменяется прямым подключением.\n- В Windows появился выбор `.exe`: «Маршрутизация → Приложения без VPN → Добавить приложение». Выбранная программа обращается напрямую, когда использует локальный прокси foxVPN. Вспомогательные `.exe` добавляются отдельно. Это не системный VPN Windows; программы, игнорирующие прокси, им не перехватываются.\n\nДля изменения правил или исключений отключите VPN, сохраните изменения и подключитесь снова. Уже открытые сетевые соединения выбранной программы нужно закрыть и открыть заново.\n\nПредварительная версия для Mac Apple Silicon и Windows x64. Профили сохраняются, обновление требует согласия. Developer ID/нотарификация и Authenticode пока отсутствуют.",
+  "pub_date": "2026-10-23T09:40:20.746836Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.30/foxVPN-0.1.30-macOS-arm64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbTZIZzFDeEk4cWUvYUZHd1ZwTzk2SEdYbURZS2RWcy9taWRWc1pXc2dZUGw5VDBIeFQrOXpPOXZWdXFUZjROTWRDNFR0VXMvajV6RWUybVFLUS9ZZndFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNjU4NDY1CWZpbGU6Zm94VlBOLTAuMS4zMC1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjMwCmRLOHlrQjJ5bXJUMmM2Mm1PNmJySHFpWWd6Ym91TWtrMWxrTmVBL0RsK05PTnd4dHFGdVpqSGRpY0xTZGQ4RFZZQThxaDlaK0tZY3lKODZNcWtDQUFBPT0K"
+      "url": "https://github.com/kvashninsasha-gif/smart-vpn-router/releases/download/v0.1.31/foxVPN-0.1.31-macOS-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTeUYvcEtUZEdQbXdlVUlPTHN1Q3NGNTdma1dQdlduR01EN1prdUNFUXdxRUZXcHFuRkxOc1o0R2JqVHYySU0rZkRGblFiWk04U0h2RDJEZWRQR1NzQ0V5MVMxS3NiTVEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNzQ4NDIwCWZpbGU6Zm94VlBOLTAuMS4zMS1tYWNPUy1hcm02NC5hcHAudGFyLmd6CXZlcnNpb246MC4xLjMxCmpLWklXWC81azJtbGVYSHBuVFJORFc4c2wwRE91YkpLVjJTempqWVlMcVVGQ1FKUXM4OXVzTmJtNjlkQlVUbWlkcFRGeGpGMWVtWUZHV3dDc2pJV0N3PT0K"
     }
   }
 }

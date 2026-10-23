@@ -2,17 +2,19 @@
 
 VPN-клиент с русским интерфейсом, VLESS/Reality, тёмной темой и правилами маршрутизации.
 
-[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.30/foxVPN_0.1.30_x64-setup.exe)
-[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.30/foxVPN-0.1.30-macOS-arm64.zip)
+[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.31/foxVPN_0.1.31_x64-setup.exe)
+[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.31/foxVPN-0.1.31-macOS-arm64.zip)
 
-**Последняя проверенная сборка: 0.1.30 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.30).
+**Последняя проверенная сборка: 0.1.31 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.31).
 
 | Платформа | Что доступно | Первый запуск |
 | --- | --- | --- |
 | Windows x64 | Локальный HTTP/SOCKS-прокси с автоматической настройкой браузеров после согласия и восстановлением прежних параметров. Системный VPN и Kill Switch ещё не реализованы | [Установка и проверка подключения](docs/windows-test-guide.md) |
 | macOS Apple Silicon | VPN всего Mac через сетевой компонент, локальный прокси и правила маршрутизации | Распакуйте ZIP, перенесите foxVPN.app в Applications; сетевой компонент устанавливается из настроек приложения |
 
-Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.30](docs/verification-0.1.30.md).
+Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.31](docs/verification-0.1.31.md).
+
+В 0.1.31 подключение находится первым на «Обзоре». Явные правила сайтов действуют во всех режимах и раньше исключений программ; точный домен важнее маски, конкретная маска важнее общей. Windows позволяет выбрать `.exe` для прямого выхода через локальный прокси foxVPN. Программы, игнорирующие прокси, им не перехватываются. [Проверки и границы](docs/verification-0.1.31.md).
 
 В 0.1.30 на Mac добавлен выбор приложений без VPN: «Маршрутизация → Приложения без VPN». Можно выбрать Windows App и другие `.app`; список применяется после сохранения и повторного подключения системного VPN. [Как пользоваться и ограничения](docs/macos-app-exclusions.md). Windows получает обновлённые компоненты безопасности; Mac-исключения там не применяются.
 
@@ -87,7 +89,7 @@ VPN-клиент с русским интерфейсом, VLESS/Reality, тём
 
 Windows x64 NSIS собран и проверен в GitHub runner; пользовательский ПК остаётся отдельной приёмкой. Intel macOS предусмотрен в исходниках, готовая проверенная Intel-сборка не опубликована. Приложение Apple Silicon не подписано Developer ID и не нотарифицировано.
 
-Значения скорости и задержки не генерируются для демонстрации. Страна сервера не определяется по имени. Полный тест отправки/потерь, GeoIP/GeoSite, маршрутизация приложений Windows, автоматическое обновление ядра, история маршрутов и качества, Multi-VPN пока не реализованы. Полная матрица: [docs/coverage.md](docs/coverage.md).
+Значения скорости и задержки не генерируются для демонстрации. Страна сервера не определяется по имени. Полный тест отправки/потерь, GeoIP/GeoSite, системный VPN и исключения всего трафика Windows, автоматическое обновление ядра, история маршрутов и качества, Multi-VPN пока не реализованы. Полная матрица: [docs/coverage.md](docs/coverage.md).
 
 ## Сборка
 
