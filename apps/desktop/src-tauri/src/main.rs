@@ -466,11 +466,13 @@ fn server_uri(id: String, s: tauri::State<State>) -> Result<String, String> {
 }
 #[tauri::command]
 async fn save_rules(
+    app: tauri::AppHandle,
     rules: Vec<Rule>,
     expected: Vec<Rule>,
     s: tauri::State<'_, State>,
 ) -> Result<(), String> {
     routing_update::dispatch(
+        app,
         s.inner().clone(),
         routing_update::Change::Rules { rules, expected },
     )
@@ -478,11 +480,13 @@ async fn save_rules(
 }
 #[tauri::command]
 async fn set_routing_mode(
+    app: tauri::AppHandle,
     mode: routing::Mode,
     expected: routing::Mode,
     s: tauri::State<'_, State>,
 ) -> Result<(), String> {
     routing_update::dispatch(
+        app,
         s.inner().clone(),
         routing_update::Change::Mode { mode, expected },
     )

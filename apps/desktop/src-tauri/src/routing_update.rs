@@ -11,6 +11,7 @@ use smart_vpn_engine::{
     vpn::CoreProcess,
 };
 use std::sync::atomic::Ordering;
+use tauri::Emitter;
 
 pub enum Change {
     Rules {
@@ -87,11 +88,16 @@ impl Drop for Pending<'_> {
         self.0.finish_current(self.1);
     }
 }
-pub async fn dispatch(state: State, change: Change) -> Result<(), String> {
+pub async fn dispatch(app: tauri::AppHandle, state: State, change: Change) -> Result<(), String> {
     let ticket = state.wanted.ticket();
-    tauri::async_runtime::spawn_blocking(move || apply(&state, change, ticket))
+    let result = tauri::async_runtime::spawn_blocking(move || apply(&state, change, ticket))
         .await
-        .map_err(|_| "Не удалось применить маршруты. Проверьте незавершённую настройку")?
+        .unwrap_or_else(|_| {
+            Err("Не удалось применить маршруты. Проверьте незавершённую настройку".into())
+        });
+    // An unsuccessful rollback must expose recovery actions immediately, too.
+    let _ = app.emit("setup-recovery-changed", ());
+    result
 }
 pub(super) fn apply(state: &State, change: Change, ticket: u64) -> Result<(), String> {
     let _measure = state
@@ -105,8 +111,9 @@ pub(super) fn apply(state: &State, change: Change, ticket: u64) -> Result<(), St
     if state.installing.load(Ordering::SeqCst) {
         return Err("Дождитесь обновления приложения".into());
     }
-    super::setup_recovery::ensure_resolved(state)?;
     let _lease = state.vault.lock_configuration()?;
+    // Inspect recovery under the same cross-window lease as the profile write.
+    super::setup_recovery::ensure_resolved(state)?;
     let before = state.vault.load()?;
     before.validate()?;
     if configuration_digest(&before)?
@@ -509,6 +516,43 @@ mod tests {
         }
     }
     #[test]
+    fn error_after_profile_write_restores_the_durable_previous_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = profile();
+        let state = fixture(&before, dir.path().join("profile.enc"));
+        let mut after = before.clone();
+        after.settings.mode = Mode::Vpn;
+        let mut runtime = Fake {
+            state: &state,
+            calls: vec![],
+            fail: 0,
+            cancel_at: 0,
+            foreign: false,
+        };
+        let mut writes = 0;
+        let result = transact(
+            &state,
+            &before,
+            &after,
+            state.wanted.ticket(),
+            &mut runtime,
+            |p| {
+                state.vault.save(p)?;
+                writes += 1;
+                if writes == 1 {
+                    Err("public post-write failure".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.unwrap_err().contains("восстановлены"));
+        assert_eq!(writes, 2);
+        assert_eq!(runtime.calls, ["Vpn", "Direct"]);
+        assert_eq!(state.vault.load().unwrap().settings.mode, Mode::Direct);
+        assert!(state.vault.load_setup_recovery().unwrap().is_none());
+    }
+    #[test]
     fn failed_rollback_retains_encrypted_recovery_and_reports_unknown() {
         let (calls, state, _dir, result) = transaction_case(2, 0, false);
         assert!(result.unwrap_err().contains("требует проверки"));
@@ -633,6 +677,34 @@ mod tests {
             ticket.wrapping_sub(1)
         )
         .is_err());
+    }
+    #[test]
+    fn unresolved_recovery_and_another_window_lease_block_scoped_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = profile();
+        let state = fixture(&before, dir.path().join("profile.enc"));
+        *state.status.lock().unwrap() = "disconnected".into();
+        let record =
+            Record::new(&uuid::Uuid::new_v4().to_string(), &before, &before, true).unwrap();
+        state.vault.save_setup_recovery(&record).unwrap();
+        let change = || Change::Mode {
+            mode: Mode::Vpn,
+            expected: Mode::Direct,
+        };
+        assert!(apply(&state, change(), state.wanted.ticket()).is_err());
+        assert_eq!(
+            state
+                .vault
+                .load_setup_recovery()
+                .unwrap()
+                .unwrap()
+                .operation_id,
+            record.operation_id
+        );
+        state.vault.clear_setup_recovery().unwrap();
+        let _lease = state.vault.lock_configuration().unwrap();
+        assert!(apply(&state, change(), state.wanted.ticket()).is_err());
+        assert_eq!(state.vault.load().unwrap().settings.mode, Mode::Direct);
     }
     #[test]
     fn real_core_replaces_active_rules_and_mode_on_same_port_without_os_changes() {

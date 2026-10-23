@@ -226,11 +226,13 @@ fn selected_apps(settings: &mut smart_vpn_engine::settings::Settings) -> &mut Ve
 
 #[tauri::command]
 pub async fn save_app_exclusions(
+    app: tauri::AppHandle,
     apps: Vec<Application>,
     expected: Vec<Application>,
     s: tauri::State<'_, State>,
 ) -> Result<(), String> {
     super::routing_update::dispatch(
+        app,
         s.inner().clone(),
         super::routing_update::Change::Apps { apps, expected },
     )
