@@ -2,17 +2,19 @@
 
 VPN-клиент с русским интерфейсом, VLESS/Reality, тёмной темой и правилами маршрутизации.
 
-[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.33/foxVPN_0.1.33_x64-setup.exe)
-[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.33/foxVPN-0.1.33-macOS-arm64.zip)
+[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.34/foxVPN_0.1.34_x64-setup.exe)
+[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.34/foxVPN-0.1.34-macOS-arm64.zip)
 
-**Последняя проверенная сборка: 0.1.33 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.33).
+**Последняя проверенная сборка: 0.1.34 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.34).
 
 | Платформа | Что доступно | Первый запуск |
 | --- | --- | --- |
 | Windows x64 | Локальный HTTP/SOCKS-прокси с автоматической настройкой браузеров после согласия и восстановлением прежних параметров. Системный VPN и Kill Switch ещё не реализованы | [Установка и проверка подключения](docs/windows-test-guide.md) |
 | macOS Apple Silicon | VPN всего Mac через сетевой компонент, локальный прокси и правила маршрутизации | Распакуйте ZIP, перенесите foxVPN.app в Applications; сетевой компонент устанавливается из настроек приложения |
 
-Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.33](docs/verification-0.1.33.md).
+Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.34](docs/verification-0.1.34.md).
+
+В 0.1.34 добавлен выбор «Трафик торрентов»: по умолчанию без VPN, через VPN — только по явному выбору. MediaGet, µTorrent/uTorrent и другие распознаваемые клиенты следуют этому выбору раньше обычных правил сайтов; переключение доступно при активном подключении. В Windows действует для трафика через локальный прокси foxVPN. [Как пользоваться](docs/torrent-routing.md), [проверки и границы](docs/verification-0.1.34.md).
 
 В 0.1.33 правила сайтов/IP, режим маршрутизации и исключения программ можно сохранять при работающем VPN на Mac и Windows. Приложение кратко переподключается само; при ошибке пытается вернуть прежние параметры. «Отключиться» остаётся доступно во время применения. [Проверки и границы](docs/verification-0.1.33.md).
 
