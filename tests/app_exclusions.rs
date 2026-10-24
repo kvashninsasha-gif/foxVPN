@@ -69,25 +69,30 @@ fn explicit_domain_rules_precede_mac_app_exclusions_without_bypassing_dns() {
         let cfg = vpn::config(&server, &settings, &rules, 2080, 2081, "public-fixture").unwrap();
         if cfg!(target_os = "macos") {
             assert_eq!(cfg["route"]["find_process"], true);
-            assert_eq!(cfg["route"]["rules"][1]["action"], "hijack-dns");
-            assert_eq!(cfg["route"]["rules"][2]["outbound"], "vpn");
-            assert_eq!(cfg["route"]["rules"][2]["domain"][0], "example.com");
-            assert_eq!(cfg["route"]["rules"][3]["outbound"], "direct");
+            assert_eq!(cfg["route"]["rules"][2]["action"], "hijack-dns");
+            assert_eq!(cfg["route"]["rules"][5]["outbound"], "vpn");
+            assert_eq!(cfg["route"]["rules"][5]["domain"][0], "example.com");
+            assert_eq!(cfg["route"]["rules"][6]["outbound"], "direct");
             assert_eq!(
-                cfg["route"]["rules"][3]["process_path_regex"][0],
+                cfg["route"]["rules"][6]["process_path_regex"][0],
                 r"^/Applications/Windows App\.app/"
             );
         } else {
-            assert!(cfg["route"]["find_process"].is_null());
+            assert_eq!(
+                cfg["route"]["find_process"].as_bool(),
+                cfg!(windows).then_some(true)
+            );
         }
         settings.tun = false;
         let proxy = vpn::config(&server, &settings, &rules, 2080, 2081, "public-fixture").unwrap();
-        assert!(proxy["route"]["find_process"].is_null());
+        assert_eq!(proxy["route"]["find_process"], true);
         assert!(proxy["route"]["rules"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|r| r["process_path_regex"].is_null()));
+            .filter(|r| r["outbound"] == "direct")
+            .all(|r| r["process_path_regex"]
+                != serde_json::json!([app_routes::bundle_pattern(&settings.excluded_apps[0])])));
     }
 }
 
@@ -119,11 +124,14 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
     assert!(app_uid >= 501 && app_uid != 62077);
     use std::os::unix::{fs::PermissionsExt, process::CommandExt};
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let protected = std::env::var("FOXVPN_TEST_TORRENT_BUNDLE")
+        .ok()
+        .filter(|s| !s.is_empty());
     let bundle = dir
         .path()
         .canonicalize()
         .unwrap()
-        .join("Windows App [Fixture].app");
+        .join(protected.as_deref().unwrap_or("Windows App [Fixture].app"));
     let main = bundle.join("Contents/MacOS/Fixture");
     let helper = bundle.join("Contents/Frameworks/Helper.app/Contents/MacOS/Helper");
     let sibling = bundle
@@ -186,12 +194,38 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
     let settings = Settings {
         mode: Mode::Vpn,
         kill_switch: false,
-        excluded_apps: vec![app(bundle.to_str().unwrap())],
+        excluded_apps: if protected.is_some() {
+            vec![]
+        } else {
+            vec![app(bundle.to_str().unwrap())]
+        },
         ..Default::default()
     };
     let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = proxy.local_addr().unwrap().port();
-    let mut cfg = vpn::config(&server, &settings, &[], port, 0, "public-app-fixture").unwrap();
+    let protected_rules = if protected.is_some() {
+        vec![
+            Rule {
+                domain: "198.18.0.2".into(),
+                route: "vpn".into(),
+            },
+            Rule {
+                domain: "127.0.0.1".into(),
+                route: "vpn".into(),
+            },
+        ]
+    } else {
+        vec![]
+    };
+    let mut cfg = vpn::config(
+        &server,
+        &settings,
+        &protected_rules,
+        port,
+        0,
+        "public-app-fixture",
+    )
+    .unwrap();
     let tun = std::env::var("FOXVPN_TEST_APP_TUN").as_deref() == Ok("1");
     let target = if tun { "198.18.0.2" } else { "127.0.0.1" };
     let target_port = if tun { http_port } else { port };
@@ -201,8 +235,9 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
         cfg["inbounds"][1]["address"] = serde_json::json!(["172.29.0.1/30"]);
         cfg["inbounds"][1]["route_address"] = serde_json::json!(["198.18.0.0/15"]);
         cfg["inbounds"][1]["dns_mode"] = serde_json::json!("disabled");
-        cfg["route"]["rules"][2]["override_address"] = serde_json::json!("127.0.0.1");
-        cfg["route"]["rules"][2]["override_port"] = serde_json::json!(http_port);
+        let index = if protected.is_some() { 0 } else { 5 };
+        cfg["route"]["rules"][index]["override_address"] = serde_json::json!("127.0.0.1");
+        cfg["route"]["rules"][index]["override_port"] = serde_json::json!(http_port);
     } else {
         cfg["inbounds"]
             .as_array_mut()

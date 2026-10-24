@@ -253,15 +253,18 @@ fn actual_router_ip_rules_and_local_network_default_respect_explicit_vpn() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("public-fixture.json");
         std::fs::write(&config, serde_json::to_vec(&cfg).unwrap()).unwrap();
-        let _core = FixtureCore(
-            Command::new(&binary)
-                .args(["run", "-c"])
-                .arg(config)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap(),
-        );
+        let mut command = Command::new(&binary);
+        command
+            .args(["run", "-c"])
+            .arg(config)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "macos")]
+        let (_broker, child_fd) =
+            smart_vpn_engine::app_process_broker::Broker::attach(&mut command, &[]).unwrap();
+        let _core = FixtureCore(command.spawn().unwrap());
+        #[cfg(target_os = "macos")]
+        drop(child_fd);
         for _ in 0..60 {
             if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
                 break;

@@ -397,3 +397,24 @@ it('keeps the original rule baseline when a newer snapshot arrives during editin
  fireEvent.click(screen.getByRole('button',{name:'Отменить изменения правил'}));
  expect(screen.getByText('other.example')).toBeTruthy();
 });
+
+describe.each(['macos','windows'] as const)('torrent route choice on %s',platform=>{
+ it('defaults to direct, saves only an explicit opt-in while connected, then switches back',async()=>{
+  snapshot.platform=platform;snapshot.status='connected';snapshot.connection_plan='ready';
+  const original=ipc.invoke.getMockImplementation()!;
+  ipc.invoke.mockImplementation(async(command:string,args:any)=>{
+   if(command==='set_torrent_route'){snapshot.profile.settings.torrents_vpn=args.enabled;return;}
+   return original(command,args);
+  });
+  await ready();const control=screen.getByRole('combobox',{name:'Трафик торрентов'});
+  expect((control as HTMLSelectElement).value).toBe('direct');
+  expect(ipc.invoke.mock.calls.some(([c])=>c==='set_torrent_route')).toBe(false);
+  fireEvent.change(control,{target:{value:'vpn'}});
+  await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('set_torrent_route',{enabled:true,expected:false}));
+  await waitFor(()=>expect(control.hasAttribute('disabled')).toBe(false));
+  expect((control as HTMLSelectElement).value).toBe('vpn');
+  fireEvent.change(control,{target:{value:'direct'}});
+  await waitFor(()=>expect(ipc.invoke).toHaveBeenCalledWith('set_torrent_route',{enabled:false,expected:true}));
+  expect(snapshot.profile.settings.dns_provider).toBe('cloudflare');expect(snapshot.status).toBe('connected');
+ });
+});

@@ -14,6 +14,10 @@ use std::sync::atomic::Ordering;
 use tauri::Emitter;
 
 pub enum Change {
+    Torrents {
+        enabled: bool,
+        expected: bool,
+    },
     Rules {
         rules: Vec<Rule>,
         expected: Vec<Rule>,
@@ -38,6 +42,12 @@ impl Change {
         let stale =
             "Маршруты изменились в другом окне. Отмените местный черновик и повторите изменение";
         match self {
+            Self::Torrents { enabled, expected } => {
+                if p.settings.torrents_vpn != expected {
+                    return Err(stale.into());
+                }
+                p.settings.torrents_vpn = enabled;
+            }
             Self::Rules {
                 mut rules,
                 expected,
@@ -303,7 +313,8 @@ impl<'a> Native<'a> {
             .as_ref()
             .is_some_and(|c| c.local.is_none());
         let server_id = if remote {
-            network_helper::require_current()?;
+            let helper = network_helper::require_current()?;
+            smart_vpn_engine::torrent_policy::require_helper(&helper)?;
             let status = network_helper::request(&network_helper::Request::Status)?.status;
             if !super::diagnostics::confirmed_remote_start(&status, p.settings.proxy_port) {
                 return Err("Системный VPN не подтвердил готовность".into());
@@ -679,6 +690,44 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn torrent_choice_is_scoped_and_rejects_a_stale_expected_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = profile();
+        let state = fixture(&p, dir.path().join("profile.enc"));
+        *state.status.lock().unwrap() = "disconnected".into();
+        apply(
+            &state,
+            Change::Torrents {
+                enabled: true,
+                expected: false,
+            },
+            state.wanted.ticket(),
+        )
+        .unwrap();
+        assert!(state.vault.load().unwrap().settings.torrents_vpn);
+        assert_eq!(state.vault.load().unwrap().settings.mode, Mode::Direct);
+        assert_eq!(state.vault.load().unwrap().servers[0].latency_ms, Some(37));
+        assert!(apply(
+            &state,
+            Change::Torrents {
+                enabled: false,
+                expected: false
+            },
+            state.wanted.ticket()
+        )
+        .is_err());
+        apply(
+            &state,
+            Change::Torrents {
+                enabled: false,
+                expected: true,
+            },
+            state.wanted.ticket(),
+        )
+        .unwrap();
+        assert!(!state.vault.load().unwrap().settings.torrents_vpn);
+    }
+    #[test]
     fn unresolved_recovery_and_another_window_lease_block_scoped_writes() {
         let dir = tempfile::tempdir().unwrap();
         let before = profile();
@@ -831,7 +880,19 @@ mod tests {
                 .send()
                 .is_ok_and(|r| r.status().as_u16() == 204)
         };
-        assert!(probe());
+        assert!(
+            probe(),
+            "{:?}",
+            state
+                .core
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .logs
+                .lock()
+                .unwrap()
+        );
         let forced = vec![Rule {
             domain: "127.0.0.1".into(),
             route: "vpn".into(),

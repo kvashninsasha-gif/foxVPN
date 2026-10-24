@@ -53,13 +53,18 @@ fn dns_is_intercepted_after_protocol_sniffing() {
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("config.json");
     std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
-    let child = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    command
         .args(["run", "-c"])
         .arg(path)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::null());
+    #[cfg(target_os = "macos")]
+    let (_broker, child_fd) =
+        smart_vpn_engine::app_process_broker::Broker::attach(&mut command, &[]).unwrap();
+    let child = command.spawn().unwrap();
+    #[cfg(target_os = "macos")]
+    drop(child_fd);
     struct Cleanup(std::process::Child, std::path::PathBuf);
     impl Drop for Cleanup {
         fn drop(&mut self) {

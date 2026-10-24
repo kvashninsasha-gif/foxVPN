@@ -479,6 +479,20 @@ async fn save_rules(
     .await
 }
 #[tauri::command]
+async fn set_torrent_route(
+    app: tauri::AppHandle,
+    enabled: bool,
+    expected: bool,
+    s: tauri::State<'_, State>,
+) -> Result<(), String> {
+    routing_update::dispatch(
+        app,
+        s.inner().clone(),
+        routing_update::Change::Torrents { enabled, expected },
+    )
+    .await
+}
+#[tauri::command]
 async fn set_routing_mode(
     app: tauri::AppHandle,
     mode: routing::Mode,
@@ -652,6 +666,7 @@ fn connect_locked(s: &State, ticket: u64, recovery_id: Option<&str>) -> Result<u
             return Err(smart_vpn_engine::text("connection_cancelled").into());
         }
         if diagnostics::confirmed_remote_start(&response.status, port) {
+            smart_vpn_engine::torrent_policy::require_helper(&response.status)?;
             *s.core.lock().unwrap() = Some(ActiveCore::remote(response.status));
             *s.status.lock().unwrap() = "connected".into();
             return Ok(port);
@@ -670,7 +685,8 @@ fn connect_locked(s: &State, ticket: u64, recovery_id: Option<&str>) -> Result<u
     *s.status.lock().unwrap() = "connecting".into();
     let result = (|| {
         let core = if p.settings.tun {
-            smart_vpn_engine::network_helper::require_current()?;
+            let helper = smart_vpn_engine::network_helper::require_current()?;
+            smart_vpn_engine::torrent_policy::require_helper(&helper)?;
             let response = smart_vpn_engine::network_helper::request(
                 &smart_vpn_engine::network_helper::Request::Start(Box::new(
                     smart_vpn_engine::network_helper::StartRequest {
@@ -1490,6 +1506,7 @@ fn main() {
             server_uri,
             save_rules,
             set_routing_mode,
+            set_torrent_route,
             save_settings,
             app_exclusions::list_macos_apps,
             app_exclusions::pick_macos_app,

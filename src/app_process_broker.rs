@@ -1,6 +1,7 @@
 //! Read-only socket ownership lookup for the privilege-dropped macOS core.
 //! An anonymous inherited socket grants no filesystem or command authority.
-//! Only paths inside the explicitly excluded bundles are returned.
+//! Paths are disclosed only for selected/protected bundles. Other verified owners
+//! receive a fixed marker; unresolved ownership stays unknown and is blocked.
 use crate::app_routes::Application;
 use std::{
     io::{Read, Write},
@@ -28,9 +29,6 @@ impl Broker {
         apps: &[Application],
     ) -> Result<(Self, UnixStream), String> {
         crate::app_routes::validate(apps)?;
-        if unsafe { libc::geteuid() } != 0 || apps.is_empty() {
-            return Err("Нет прав для определения приложений VPN".into());
-        }
         let (mut server, child) =
             UnixStream::pair().map_err(|_| "Не удалось подготовить проверку приложений")?;
         server
@@ -152,10 +150,10 @@ impl Query {
     }
 }
 fn lookup(query: &Query, apps: &[Application]) -> Option<(u32, String)> {
-    let data = snapshot(query.network)?;
+    let data = snapshot(query.network).unwrap_or_default();
     let stride = if query.network == 1 { 616 } else { 408 };
     let mut fallback = None;
-    for entry in data.get(24..)?.chunks_exact(stride) {
+    for entry in data.get(24..).unwrap_or_default().chunks_exact(stride) {
         let local_port = u16::from_be_bytes(entry[18..20].try_into().ok()?);
         if local_port != query.source_port {
             continue;
@@ -178,6 +176,7 @@ fn lookup(query: &Query, apps: &[Application]) -> Option<(u32, String)> {
         let remote_port = u16::from_be_bytes(entry[16..18].try_into().ok()?);
         let uid = u32::from_ne_bytes(entry[168..172].try_into().ok()?);
         let pid = u32::from_ne_bytes(entry[172..176].try_into().ok()?);
+
         if local == query.source
             && remote == query.destination
             && remote_port == query.destination_port
@@ -198,10 +197,46 @@ fn lookup(query: &Query, apps: &[Application]) -> Option<(u32, String)> {
             fallback = Some((pid, uid));
         }
     }
-    fallback.and_then(|(pid, uid)| allowed_path(pid, uid, apps))
+    if let Some((pid, uid)) = fallback {
+        return allowed_path(pid, uid, apps);
+    }
+    unsafe extern "C" {
+        fn fox_user_connection_owner(
+            network: u8,
+            family: u8,
+            source: *const u8,
+            destination: *const u8,
+            source_port: u16,
+            destination_port: u16,
+        ) -> i32;
+    }
+    let (family, source, destination) = match (query.source, query.destination) {
+        (IpAddr::V4(s), IpAddr::V4(d)) => (4, s.octets().to_vec(), d.octets().to_vec()),
+        (IpAddr::V6(s), IpAddr::V6(d)) => (6, s.octets().to_vec(), d.octets().to_vec()),
+        _ => return None,
+    };
+    let pid = unsafe {
+        fox_user_connection_owner(
+            query.network,
+            family,
+            source.as_ptr(),
+            destination.as_ptr(),
+            query.source_port,
+            query.destination_port,
+        )
+    };
+    if pid < 2 {
+        return None;
+    }
+    allowed_path(pid as u32, unsafe { libc::geteuid() }, apps)
 }
 fn allowed_path(pid: u32, uid: u32, apps: &[Application]) -> Option<(u32, String)> {
-    if pid < 2 || pid > i32::MAX as u32 || uid < 501 || uid == crate::network_helper::CORE_UID {
+    let caller = unsafe { libc::geteuid() };
+    if pid < 2
+        || pid > i32::MAX as u32
+        || uid == crate::network_helper::CORE_UID
+        || (caller != 0 && uid != caller)
+    {
         return None;
     }
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -216,7 +251,7 @@ fn allowed_path(pid: u32, uid: u32, apps: &[Application]) -> Option<(u32, String
         )
     } != size as i32
         || info.pbi_uid != uid
-        || info.pbi_ruid != uid
+        || (uid >= 501 && info.pbi_ruid != uid)
     {
         return None;
     }
@@ -230,12 +265,22 @@ fn allowed_path(pid: u32, uid: u32, apps: &[Application]) -> Option<(u32, String
     }
     let end = bytes.iter().position(|v| *v == 0)?;
     let path = std::str::from_utf8(&bytes[..end]).ok()?;
-    apps.iter()
-        .any(|app| {
+    if crate::torrent_policy::mac_torrent_path(path) {
+        return Some((uid, crate::torrent_policy::TORRENT_OWNER.into()));
+    }
+    let disclose = uid >= 501
+        && apps.iter().any(|app| {
             path.strip_prefix(&app.path)
                 .is_some_and(|tail| tail.starts_with('/'))
-        })
-        .then(|| (uid, path.to_owned()))
+        });
+    Some((
+        uid,
+        if disclose {
+            path.to_owned()
+        } else {
+            crate::torrent_policy::OTHER_OWNER.to_owned()
+        },
+    ))
 }
 fn snapshot(network: u8) -> Option<Vec<u8>> {
     let name = if network == 1 {
@@ -278,6 +323,23 @@ fn snapshot(network: u8) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_user_tcp_owner_is_identified_without_admin_or_private_paths() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_accepted, _) = listener.accept().unwrap();
+        let query = Query {
+            network: 1,
+            source: client.local_addr().unwrap().ip(),
+            source_port: client.local_addr().unwrap().port(),
+            destination: listener.local_addr().unwrap().ip(),
+            destination_port: listener.local_addr().unwrap().port(),
+        };
+        let result =
+            lookup(&query, &[]).expect("current user's live TCP socket must be identifiable");
+        assert_eq!(result.0, unsafe { libc::geteuid() });
+        assert_eq!(result.1, crate::torrent_policy::OTHER_OWNER);
+    }
     #[test]
     fn rejects_unknown_frames_and_zero_ports_without_any_system_lookup() {
         let mut frame = [0u8; 44];

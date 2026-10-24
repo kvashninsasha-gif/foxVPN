@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub torrents_vpn: bool,
     pub windows_excluded_apps: Vec<crate::app_routes::Application>,
     pub excluded_apps: Vec<crate::app_routes::Application>,
     pub mode: Mode,
@@ -31,6 +32,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            torrents_vpn: false,
             excluded_apps: vec![],
             windows_excluded_apps: vec![],
             mode: Mode::Smart,

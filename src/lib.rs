@@ -10,6 +10,7 @@ pub mod settings;
 pub mod setup_recovery;
 pub mod statistics;
 pub mod subscriptions;
+pub mod torrent_policy;
 pub mod vpn;
 
 pub fn text(key: &str) -> &'static str {

@@ -1,6 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
 fn main() {
     println!("cargo:rerun-if-changed=macos/platform.m");
+    println!("cargo:rerun-if-changed=macos/socket_owner.c");
     println!("cargo:rerun-if-changed=core/network-version.json");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());

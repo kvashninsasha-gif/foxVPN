@@ -95,3 +95,5 @@ void fox_watch_network(void) {
  if(source) { CFRunLoopAddSource(CFRunLoopGetCurrent(),source,kCFRunLoopDefaultMode); CFRunLoopRun(); CFRelease(source); }
  CFRelease(store); }
 }
+
+#include "socket_owner.c"

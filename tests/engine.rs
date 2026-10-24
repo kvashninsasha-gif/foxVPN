@@ -247,8 +247,9 @@ fn config_has_protected_dns_and_both_address_families() {
     assert_eq!(c["dns"]["servers"][2]["detour"], "vpn");
     assert_eq!(c["dns"]["final"], "dns-vpn");
     assert_eq!(c["inbounds"][1]["address"].as_array().unwrap().len(), 2);
-    assert_eq!(c["route"]["rules"][0]["action"], "sniff");
-    assert_eq!(c["route"]["rules"][1]["action"], "hijack-dns");
+    let route = c["route"]["rules"].as_array().unwrap();
+    let sniff = route.iter().position(|r| r["action"] == "sniff").unwrap();
+    assert_eq!(route[sniff + 1]["action"], "hijack-dns");
     assert!(c["route"]["rules"]
         .as_array()
         .unwrap()
