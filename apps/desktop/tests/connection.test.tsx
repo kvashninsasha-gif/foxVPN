@@ -1,6 +1,6 @@
 import React from 'react';
 import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
-import {render,screen,fireEvent,waitFor,cleanup,act} from '@testing-library/react';
+import {render,screen,fireEvent,waitFor,cleanup,act,within} from '@testing-library/react';
 const ipc=vi.hoisted(()=>({invoke:vi.fn(),listen:vi.fn(async()=>()=>{}),enabled:vi.fn(async()=>false)}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:ipc.invoke}));
 vi.mock('@tauri-apps/api/event',()=>({listen:ipc.listen}));
@@ -68,6 +68,7 @@ describe('connection setup regression',()=>{
   expect(screen.queryByRole('button',{name:'Объяснить результаты с ИИ'})).toBeNull();
   expect(ipc.invoke.mock.calls.some(([c])=>c==='ai_state')).toBe(false);
   fireEvent.click(screen.getByRole('button',{name:'Проверить и настроить'}));
+  fireEvent.click(await screen.findByText('Подробности и другие варианты'));
   const explain=await screen.findByRole('button',{name:'Объяснить результаты с ИИ'});
   expect(explain.hasAttribute('disabled')).toBe(false);
   fireEvent.click(explain);await screen.findByText('Параметры прокси требуют проверки.');
@@ -79,7 +80,8 @@ describe('connection setup regression',()=>{
   await screen.findByText('План настройки');
   expect(screen.getByText('Включить автоматическую настройку прокси Windows')).toBeTruthy();
   fireEvent.click(screen.getByRole('button',{name:'Применить план'}));
-  expect(screen.getByRole('dialog',{name:'Подтверждение плана настройки'})).toBeTruthy();
+  expect(screen.getByRole('region',{name:'Подтверждение плана настройки'})).toBeTruthy();
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
   expect(ipc.invoke.mock.calls.some(([c])=>c==='prepare_proxy')).toBe(false);
   fireEvent.click(screen.getByRole('button',{name:'Отмена'}));
   expect(snapshot.status).toBe('connected');
@@ -92,8 +94,8 @@ describe('connection setup regression',()=>{
    if(command==='setup_check')return {items:[{label:'Текущее соединение',ok:false,message:'Не подключено'}],action:'connect',selected:'test',recommendation:null,tested:1,total:1,changed:false,check_id:'download-check'};
    return original(command,args);
   });
-  await ready();expect(screen.queryByRole('button',{name:'Скачать ИИ-помощника'})).toBeNull();fireEvent.click(screen.getByRole('button',{name:'Проверить и настроить'}));fireEvent.click(await screen.findByRole('button',{name:'Скачать ИИ-помощника'}));
-  expect(screen.getByRole('dialog',{name:'Загрузка ИИ-помощника'})).toBeTruthy();
+  await ready();expect(screen.queryByRole('button',{name:'Скачать ИИ-помощника'})).toBeNull();fireEvent.click(screen.getByRole('button',{name:'Проверить и настроить'}));fireEvent.click(await screen.findByText('Подробности и другие варианты'));fireEvent.click(await screen.findByRole('button',{name:'Скачать ИИ-помощника'}));
+  expect(screen.getByRole('region',{name:'Загрузка ИИ-помощника'})).toBeTruthy();
   expect(ipc.invoke.mock.calls.some(([c])=>c==='ai_download')).toBe(false);
   fireEvent.click(screen.getByRole('button',{name:'Не сейчас'}));
   expect(ipc.invoke.mock.calls.some(([c])=>c==='ai_download')).toBe(false);
@@ -108,8 +110,8 @@ describe('connection setup regression',()=>{
   const original=ipc.invoke.getMockImplementation()!;
   ipc.invoke.mockImplementation(async(command:string,args:any)=>{if(command==='setup_check')return {items:[],action:'connect',selected:'test',recommendation:null,tested:1,total:1,changed:false};return original(command,args)});
   await ready();fireEvent.click(screen.getByRole('button',{name:'Проверить и настроить'}));
-  await screen.findByRole('button',{name:'Перейти к подключению'});snapshot.status='connected';
-  fireEvent.click(screen.getByRole('button',{name:'Перейти к подключению'}));
+  const repair=await screen.findByRole('dialog',{name:'Ремонт подключения'});await within(repair).findByRole('button',{name:'Подключиться'});snapshot.status='connected';
+  fireEvent.click(within(repair).getByRole('button',{name:'Подключиться'}));
   await waitFor(()=>expect(screen.getAllByText(/Состояние подключения изменилось/).length).toBeGreaterThan(0));
   expect(ipc.invoke.mock.calls.some(([command])=>command==='connect'||command==='stop')).toBe(false);
  });

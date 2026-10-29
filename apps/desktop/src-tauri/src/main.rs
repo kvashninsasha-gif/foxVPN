@@ -853,11 +853,31 @@ async fn stop(s: tauri::State<'_, State>) -> Result<(), String> {
         .await
         .map_err(|_| smart_vpn_engine::text("message_322"))?
 }
+fn require_idle_server_test(s: &State) -> Result<(), String> {
+    if s.installing.load(std::sync::atomic::Ordering::SeqCst)
+        || s.wanted.load(std::sync::atomic::Ordering::SeqCst)
+        || s.status
+            .lock()
+            .map_err(|_| "Не удалось проверить подключение")?
+            .as_str()
+            != "disconnected"
+        || s.core
+            .lock()
+            .map_err(|_| "Не удалось проверить подключение")?
+            .is_some()
+    {
+        return Err("Для сравнения серверов сначала отключите VPN. Показатели текущего подключения доступны в «Обзоре»; серверы не помечены недоступными".into());
+    }
+    Ok(())
+}
 fn test_impl(s: &State, id: &str, speed: bool) -> Result<latency::Measurement, String> {
+    require_idle_server_test(s)?;
     let _measurement = s
         .measurements
         .lock()
         .map_err(|_| smart_vpn_engine::text("message_323"))?;
+    require_idle_server_test(s)?;
+    let ticket = s.wanted.ticket();
     let server = s
         .profile
         .lock()
@@ -869,10 +889,21 @@ fn test_impl(s: &State, id: &str, speed: bool) -> Result<latency::Measurement, S
         .ok_or(smart_vpn_engine::text("message_315"))?;
     let result =
         diagnostics::verify_core(s).and_then(|_| latency::measure(&s.binary, &server, speed));
+    require_idle_server_test(s)?;
+    if !s.wanted.current(ticket) {
+        return Err("Подключение изменилось во время проверки. Результат не сохранён".into());
+    }
     edit(s, |p| {
+        require_idle_server_test(s)?;
+        if !s.wanted.current(ticket) {
+            return Err("Подключение изменилось во время проверки. Результат не сохранён".into());
+        }
         let Some(v) = p.servers.iter_mut().find(|v| v.id == id) else {
             return Ok(());
         };
+        if v.uri().ok() != server.uri().ok() {
+            return Ok(());
+        }
         match &result {
             Ok(m) => {
                 v.latency_ms = Some(m.latency_ms);
@@ -915,6 +946,7 @@ async fn test_server(
 async fn test_all(app: tauri::AppHandle, s: tauri::State<'_, State>) -> Result<(), String> {
     let state = s.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_idle_server_test(&state)?;
         let ids: Vec<_> = state
             .profile
             .lock()

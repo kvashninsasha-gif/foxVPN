@@ -44,6 +44,7 @@ mod daemon {
         pid: Option<u32>,
         token: Option<String>,
     }
+    type HealthProbe = (u64, u32, std::sync::mpsc::Receiver<Result<(), String>>);
     struct Manager {
         core: Option<CoreProcess>,
         saved: Saved,
@@ -52,7 +53,8 @@ mod daemon {
         epoch: u64,
         pause_until: Instant,
         last_health: Instant,
-        healthy: bool,
+        health_probe: Option<HealthProbe>,
+        health: smart_vpn_engine::connectivity::Health,
         failures: u32,
         candidate: usize,
     }
@@ -126,16 +128,7 @@ mod daemon {
         })
     }
     fn system_health() -> Result<(), String> {
-        reqwest::blocking::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(8))
-            .build()
-            .map_err(|_| message("helper_system_error"))?
-            .get("https://www.gstatic.com/generate_204")
-            .send()
-            .and_then(|r| r.error_for_status())
-            .map_err(|e| smart_vpn_engine::vpn::friendly_error(&e.to_string()))?;
-        Ok(())
+        smart_vpn_engine::connectivity::probe(None)
     }
     fn guard_rules() -> String {
         format!("pass out quick on lo0 all no state\npass out quick on utun99 all no state\npass out quick inet proto udp from any port 68 to any port 67 no state\npass out quick inet6 proto icmp6 icmp6-type {{ 133, 134, 135, 136 }} no state\npass out quick proto {{ tcp, udp }} all user {CORE_UID} keep state\nblock drop out quick all\n")
@@ -176,7 +169,7 @@ mod daemon {
                 helper_version: env!("CARGO_PKG_VERSION").into(),
                 core_alive: running,
                 dns_active: unsafe { fox_dns_active() } != 0,
-                running: running && self.healthy,
+                running: running && self.health.ready,
                 wanted: self.saved.wanted.is_some(),
                 error: self.error.clone(),
                 active_server_id: self
@@ -260,7 +253,7 @@ mod daemon {
         }
         fn stop(&mut self) -> Result<(), String> {
             self.saved.wanted = None;
-            self.healthy = false;
+            self.health.ready = false;
             save(&self.saved)?;
             if let Some(core) = self.core.as_mut() {
                 core.stop_checked()?;
@@ -316,8 +309,23 @@ mod daemon {
             result
         }
         fn restart(&mut self) -> Result<(), String> {
+            self.health_probe = None;
+            self.health = Default::default();
+            let result = self.restart_inner();
+            if result.is_err() {
+                self.health.ready = false;
+                self.core = None;
+                self.saved.pid = None;
+                unsafe {
+                    fox_dns(0);
+                }
+                let _ = save(&self.saved);
+            }
+            result
+        }
+        fn restart_inner(&mut self) -> Result<(), String> {
             self.last = Instant::now();
-            self.healthy = false;
+            self.health.ready = false;
             self.core = None;
             self.saved.pid = None;
             unsafe {
@@ -374,17 +382,13 @@ mod daemon {
                 return Err(message("helper_dns_error"));
             }
             let _ = fixed_command("/usr/bin/dscacheutil", &["-flushcache"]);
-            smart_vpn_engine::latency::client(core.proxy_port)?
-                .get("https://www.gstatic.com/generate_204")
-                .send()
-                .and_then(|r| r.error_for_status())
-                .map_err(|e| smart_vpn_engine::vpn::friendly_error(&e.to_string()))?;
+            smart_vpn_engine::connectivity::probe(Some(core.proxy_port))?;
             // A proxy health check alone misses broken system DNS and TUN routing.
             system_health()?;
             self.saved.pid = Some(core.child.id());
             self.core = Some(core);
             self.error = None;
-            self.healthy = true;
+            self.health.ready = true;
             self.failures = 0;
             self.last_health = Instant::now();
             save(&self.saved)?;
@@ -393,26 +397,66 @@ mod daemon {
         }
         fn maintain(&mut self) {
             let dead = self.core.as_mut().is_some_and(|c| !c.alive());
+            let epoch = unsafe { fox_network_epoch() };
+            let changed = epoch != self.epoch;
+            if changed {
+                // A new network must not inherit an old result or 60-second backoff.
+                self.failures = 0;
+                self.health_probe = None;
+                self.epoch = epoch;
+            }
+            if let Some((started_epoch, pid, receiver)) = self.health_probe.take() {
+                match receiver.try_recv() {
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.health_probe = Some((started_epoch, pid, receiver));
+                    }
+                    result
+                        if started_epoch == epoch
+                            && self
+                                .core
+                                .as_ref()
+                                .is_some_and(|core| core.child.id() == pid) =>
+                    {
+                        match result.unwrap_or_else(|_| Err(message("helper_system_error"))) {
+                            Ok(()) => {
+                                self.health.observe(true);
+                                self.error = None;
+                            }
+                            Err(error) => {
+                                self.health.observe(false);
+                                self.error = Some(error);
+                            }
+                        }
+                    }
+                    _ => (), // The network or core changed while HTTPS was in flight.
+                }
+            }
             if !dead
+                && !changed
                 && self.core.is_some()
+                && self.health_probe.is_none()
                 && self.saved.wanted.as_ref().is_some_and(|r| {
-                    self.last_health.elapsed() >= Duration::from_secs(r.settings.health_interval)
+                    self.last_health.elapsed()
+                        >= self
+                            .health
+                            .interval(Duration::from_secs(r.settings.health_interval))
                 })
             {
                 self.last_health = Instant::now();
-                if let Err(error) = system_health() {
-                    self.healthy = false;
-                    self.error = Some(error);
-                }
+                let pid = self.core.as_ref().map_or(0, |core| core.child.id());
+                let (sender, receiver) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = sender.send(system_health());
+                });
+                self.health_probe = Some((epoch, pid, receiver));
             }
-            let changed = unsafe { fox_network_epoch() } != self.epoch;
             if self
                 .saved
                 .wanted
                 .as_ref()
                 .is_some_and(|r| r.settings.restore)
-                && (dead || changed || self.core.is_none() || !self.healthy)
-                && self.last.elapsed() >= retry_delay(self.failures)
+                && (dead || changed || self.core.is_none() || self.health.needs_restart())
+                && (changed || self.last.elapsed() >= retry_delay(self.failures))
                 && Instant::now() >= self.pause_until
             {
                 if self
@@ -528,7 +572,8 @@ mod daemon {
             epoch: unsafe { fox_network_epoch() },
             pause_until: Instant::now(),
             last_health: Instant::now(),
-            healthy: false,
+            health_probe: None,
+            health: Default::default(),
             failures: 0,
             candidate: 0,
         };
@@ -587,7 +632,7 @@ mod daemon {
                         Ok(Request::TestRecovery) => {
                             if manager.saved.wanted.as_ref().is_some_and(recovery_allowed) {
                                 manager.core = None;
-                                manager.healthy = false;
+                                manager.health.ready = false;
                                 manager.saved.pid = None;
                                 manager.pause_until = Instant::now() + Duration::from_secs(10);
                                 let _ = save(&manager.saved);

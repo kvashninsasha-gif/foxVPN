@@ -6,7 +6,7 @@ import type {SetupReport} from './SetupAssistant';
 type Info={model:string;available:boolean;phase:'idle'|'download'|'thinking';downloaded:number;total:number};
 type Answer={text:string;advice:string;elapsed_ms:number};
 type Progress={stage:string;downloaded:number;total:number};
-export function LocalAssistant({report,locked=false}:{report:SetupReport|null;locked?:boolean}){
+export function LocalAssistant({report,locked=false,inlineConfirmation=false}:{report:SetupReport|null;locked?:boolean;inlineConfirmation?:boolean}){
  const [info,setInfo]=useState<Info|null>(null),[answer,setAnswer]=useState<Answer|null>(null);
  const [busy,setBusy]=useState(false),[confirm,setConfirm]=useState(false),[message,setMessage]=useState('');
  const [progress,setProgress]=useState<Progress|null>(null);
@@ -56,7 +56,7 @@ export function LocalAssistant({report,locked=false}:{report:SetupReport|null;lo
   {message&&<p role="status">{message}</p>}
   {answer&&<div className="ai-answer" aria-live="polite"><b>Объяснение ИИ</b><p className="ai-text">{answer.text}</p>
    <p className="footnote">{report.healthy?'Настройки не изменялись.':'Ответ ИИ может быть неточным. Настройки не изменялись.'}</p><b>Проверенный следующий шаг</b><p>{answer.advice}</p></div>}
-  {confirm&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Загрузка ИИ-помощника">
+  {confirm&&<div className={inlineConfirmation?"repair-confirmation":"modal-backdrop"}><section className={inlineConfirmation?"":"modal"} role={inlineConfirmation?"region":"dialog"} aria-modal={inlineConfirmation?undefined:true} aria-label="Загрузка ИИ-помощника">
    <h2>Скачать локальную модель?</h2><p>foxVPN скачает около 640 МБ с Hugging Face, из официального репозитория Qwen, и проверит файл перед запуском. Для сохранения потребуется свободное место на устройстве. Диагностика, серверы и ключи доступа при загрузке не передаются.</p>
    <p>Модель необязательна: обычная проверка и настройка работают без неё. На время ответа возможна дополнительная нагрузка на процессор и память.</p>
    <div className="modal-actions"><button className="secondary" onClick={()=>setConfirm(false)}>Не сейчас</button><button className="primary" disabled={locked||running||expired} onClick={()=>void download()}>Скачать модель</button></div>

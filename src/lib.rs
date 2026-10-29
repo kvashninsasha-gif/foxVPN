@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 pub mod app_process_broker;
 pub mod app_routes;
+pub mod connectivity;
 pub mod core_integrity;
 pub mod latency;
 pub mod lifecycle;

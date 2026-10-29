@@ -22,7 +22,7 @@ const booleans:{key:keyof Settings;label:string;platform?:'macos'|'windows'}[]=[
  {key:'auto_connect',label:'Подключаться при запуске foxVPN'},{key:'start_minimized',label:'Свёрнутый запуск'},
  {key:'auto_metrics',label:'Автоматические замеры'},
 ];
-export function ConfigurationAssistant({report,locked=false,onDone,session}:{report:SetupReport|null;locked?:boolean;onDone:()=>Promise<void>;session?:ConfigurationSession}){
+export function ConfigurationAssistant({report,locked=false,onDone,session,inlineConfirmation=false,onPlanChanged}:{report:SetupReport|null;locked?:boolean;onDone:()=>Promise<void>;session?:ConfigurationSession;inlineConfirmation?:boolean;onPlanChanged?:()=>void}){
  const [platform,setPlatform]=useState(''),[currentTun,setCurrentTun]=useState(true),[patch,setPatch]=useState<Patch>({}),[rules,setRules]=useState('');
  const [replaceRules,setReplaceRules]=useState(false),[selectRecommended,setSelectRecommended]=useState(true),[connectAfter,setConnectAfter]=useState(true);
  const [plan,setPlan]=useState<Plan|null>(null);
@@ -33,8 +33,8 @@ export function ConfigurationAssistant({report,locked=false,onDone,session}:{rep
  const initialized=useRef(false),reportGeneration=useRef(0);
  useEffect(()=>{let alive=true;void invoke<Snapshot>('snapshot').then(s=>{if(alive){setPlatform(s.platform??'macos');setCurrentTun(s.profile?.settings.tun??true);if(!initialized.current){initialized.current=true;if(s.platform==='windows')setPatch(p=>({windows_proxy_auto:true,...p}))}}}).catch(()=>{});return()=>{alive=false}},[report?.check_id]);
  useEffect(()=>{reportGeneration.current++;setPlan(null);setConfirm(null);return()=>{reportGeneration.current++}},[report?.check_id,report?.changed]);
- function change(key:keyof Settings,value:unknown){setPatch(p=>{const next={...p};if(value===undefined)delete next[key];else (next as Record<string,unknown>)[key]=value;return next});setPlan(null)}
- async function prepare(){if(!report?.check_id||report.changed||locked||busy)return;const generation=reportGeneration.current;setPhase('preview');setMessage('');try{
+ function change(key:keyof Settings,value:unknown){onPlanChanged?.();setPatch(p=>{const next={...p};if(value===undefined)delete next[key];else (next as Record<string,unknown>)[key]=value;return next});setPlan(null)}
+ async function prepare(){if(!report?.check_id||report.changed||locked||busy)return;onPlanChanged?.();const generation=reportGeneration.current;setPhase('preview');setMessage('');try{
   const customRules=replaceRules?rules.split('\n').filter(v=>v.trim()).map(line=>{const [domain,route,...rest]=line.trim().split(/\s+/);if(!domain||!['vpn','direct'].includes(route)||rest.length)throw new Error('Правило: домен и маршрут vpn или direct');return {domain,route}}):undefined;
   const value=await invoke<Plan>('prepare_setup_plan',{checkId:report.check_id,options:{patch,rules:customRules,select_recommended:selectRecommended,connect_after:connectAfter}});if(generation===reportGeneration.current)setPlan(value);
  }catch(e){setMessage(String(e))}finally{setOperationId(null);setPhase(null)}}
@@ -67,7 +67,7 @@ export function ConfigurationAssistant({report,locked=false,onDone,session}:{rep
    {result&&<button className="secondary" disabled={disabled} onClick={()=>setConfirm('undo')}>Вернуть прежние настройки</button>}</div>
   {busy&&<p role="status">Выполняем настройку и проверяем результат… {!session&&(phase==='apply'||phase==='undo')&&<button className="secondary" onClick={()=>void cancel()}>Отменить настройку</button>}</p>}{message&&<p role="status">{message}</p>}
   {plan&&<div className="ai-answer"><b>План настройки</b>{plan.scope&&<p><strong>Охват:</strong> {plan.scope}</p>}{plan.changes.length?<ul>{plan.changes.map((v,i)=><li key={i}>{v}</li>)}</ul>:<p>Параметры сохраняются. Будет проверено подключение.</p>}<RuleChanges changes={plan.rule_changes??[]}/><ol>{plan.steps.map((v,i)=><li key={i}>{v}</li>)}</ol>{plan.blockers.map((v,i)=><p role="alert" key={i}>{v}</p>)}<button className="primary" disabled={disabled||plan.blockers.length>0} onClick={()=>setConfirm('apply')}>Применить план</button></div>}
-  {confirm&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Подтверждение плана настройки"><h2>{confirm==='apply'?'Применить этот план?':'Вернуть прежние настройки?'}</h2>
+  {confirm&&<div className={inlineConfirmation?"repair-confirmation":"modal-backdrop"}><section className={inlineConfirmation?"":"modal"} role={inlineConfirmation?"region":"dialog"} aria-modal={inlineConfirmation?undefined:true} aria-label="Подтверждение плана настройки"><h2>{confirm==='apply'?'Применить этот план?':'Вернуть прежние настройки?'}</h2>
    {confirm==='apply'&&plan?<>{plan.scope&&<p><strong>Охват:</strong> {plan.scope}</p>}<RuleChanges changes={plan.rule_changes??[]}/><ul>{plan.changes.map((v,i)=><li key={i}>{v}</li>)}</ul><ol>{plan.steps.map((v,i)=><li key={i}>{v}</li>)}</ol></>:<p>foxVPN остановит текущее подключение, вернёт сохранённые прежние настройки и восстановит прежнее соединение, если оно было подключено. Если вы уже изменили настройки или состояние, возврат будет отменён.</p>}
    <p>На Mac установка сетевого компонента и системные разрешения подтверждаются отдельно в macOS. Для Windows настраивается локальный прокси; системный TUN недоступен.</p>
    <div className="modal-actions"><button className="secondary" disabled={disabled} onClick={()=>setConfirm(null)}>Отмена</button><button className="primary" disabled={disabled} onClick={()=>void(confirm==='apply'?apply():undo())}>Подтвердить план</button></div>

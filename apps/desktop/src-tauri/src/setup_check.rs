@@ -85,22 +85,8 @@ fn confirmed_healthy(
         && (!system_vpn || (passed("Системный DNS") && passed("Интернет через систему")))
         && items.iter().all(|item| item.ok)
 }
-fn probe_system_connection() -> bool {
-    // Respect OS DNS/routes while refusing an environment/application proxy;
-    // otherwise a working SOCKS port could conceal a broken system tunnel.
-    reqwest::blocking::Client::builder()
-        .no_proxy()
-        .connect_timeout(std::time::Duration::from_secs(4))
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .ok()
-        .and_then(|client| {
-            client
-                .get("https://www.gstatic.com/generate_204")
-                .send()
-                .ok()
-        })
-        .is_some_and(|response| response.status().as_u16() == 204)
+pub(crate) fn probe_system_connection() -> bool {
+    smart_vpn_engine::connectivity::probe(None).is_ok()
 }
 #[cfg(any(windows, test))]
 fn manual_proxy_is_unambiguous(matches: bool, flags: Option<u32>) -> bool {
@@ -153,9 +139,7 @@ pub async fn setup_check(
         if active {
             if let Some((port, _)) = &current {
                 let _ = app.emit("setup-check-progress", "Проверяем текущее соединение…");
-                healthy = latency::client(*port).and_then(|c| c.get("https://www.gstatic.com/generate_204")
-                    .send().map(|r| r.status().as_u16() == 204).map_err(|_| "Контрольный HTTPS-запрос не прошёл".into()))
-                    .unwrap_or(false);
+                healthy = smart_vpn_engine::connectivity::probe(Some(*port)).is_ok();
             }
             item(&mut items, "Текущее соединение", healthy, if healthy {
                 "Контрольный HTTPS-запрос через текущий локальный порт прошёл. Подключение не прерывалось"

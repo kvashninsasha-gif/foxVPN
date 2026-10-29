@@ -199,3 +199,23 @@ fn a_running_helper_with_failed_dns_is_never_displayed_as_connected() {
     assert_eq!(state.status.lock().unwrap().as_str(), "unknown");
     assert!(state.core.lock().unwrap().is_none());
 }
+
+#[test]
+fn manual_comparison_does_not_start_extra_cores_or_mark_servers_down_during_a_tunnel() {
+    for status in ["connecting", "connected", "reconnecting", "unknown"] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path().join("profile.enc"));
+        *state.status.lock().unwrap() = status.into();
+        let server = smart_vpn_engine::servers::Server::parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=none&type=tcp#fixture").unwrap();
+        let id = server.id.clone();
+        state.profile.lock().unwrap().servers.push(server);
+        let before = serde_json::to_value(&*state.profile.lock().unwrap()).unwrap();
+        let error = super::test_impl(&state, &id, false).err().unwrap();
+        assert!(error.contains("сначала отключите VPN"));
+        assert_eq!(
+            serde_json::to_value(&*state.profile.lock().unwrap()).unwrap(),
+            before
+        );
+        assert!(state.core.lock().unwrap().is_none());
+    }
+}

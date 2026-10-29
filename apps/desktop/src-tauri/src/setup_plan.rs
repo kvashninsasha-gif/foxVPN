@@ -399,7 +399,10 @@ fn build(
         ));
     }
     let modifies = configured(before)? != configured(&after)?;
-    let healthy = item(report, "Текущее соединение") == Some(true);
+    let healthy = item(report, "Текущее соединение") == Some(true)
+        && (!after.settings.tun
+            || (item(report, "Системный DNS") == Some(true)
+                && item(report, "Интернет через систему") == Some(true)));
     let reconnect = active && (modifies || !healthy || !options.connect_after);
     let mut steps = vec![];
     if options.select_recommended && active {
@@ -827,6 +830,9 @@ impl Backend for Live<'_> {
             if !s.compatible() || !s.running || !s.core_alive || !s.dns_active {
                 return Err("Системный VPN/DNS не подтвердил подключение".into());
             }
+            if !super::setup_check::probe_system_connection() {
+                return Err("Интернет через системные DNS и маршруты не подтвердился".into());
+            }
             if self
                 .state
                 .profile
@@ -1148,6 +1154,59 @@ mod tests {
         let p = Profile::default();
         let o:Options=serde_json::from_value(serde_json::json!({"rules":[{"domain":"invalid/path","route":"vpn"}],"connect_after":false})).unwrap();
         assert!(build(&p, &r, &o, true, false, false, None).is_err());
+    }
+    #[test]
+    fn repair_reconnects_a_working_proxy_when_the_mac_system_path_is_broken() {
+        let p = Profile::default();
+        let mut r = super::super::setup_check::private_fixture_report();
+        let base = r.items[0].clone();
+        for label in [
+            "Текущее соединение",
+            "Системный DNS",
+            "Интернет через систему",
+        ] {
+            let mut item = base.clone();
+            item.label = label;
+            item.ok = true;
+            r.items.push(item);
+        }
+        let options: Options = serde_json::from_str("{}").unwrap();
+        let (_, plan) = build(
+            &p,
+            &r,
+            &options,
+            false,
+            true,
+            true,
+            Some(p.settings.proxy_port),
+        )
+        .unwrap();
+        assert!(!plan.reconnect);
+        for failed in ["Системный DNS", "Интернет через систему"] {
+            let mut broken = r.clone();
+            broken
+                .items
+                .iter_mut()
+                .find(|v| v.label == failed)
+                .unwrap()
+                .ok = false;
+            let (_, plan) = build(
+                &p,
+                &broken,
+                &options,
+                false,
+                true,
+                true,
+                Some(p.settings.proxy_port),
+            )
+            .unwrap();
+            assert!(plan.reconnect, "{failed}");
+            assert_eq!(
+                plan.changes.len(),
+                0,
+                "repair must preserve the user profile"
+            );
+        }
     }
     #[test]
     fn stale_or_forged_plans_are_rejected() {

@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
 import {LocalAssistant} from './LocalAssistant';
@@ -6,37 +6,97 @@ import {ConfigurationAssistant} from './ConfigurationAssistant';
 import {useConfigurationSession,type ConfigurationSession} from './configurationSession';
 export type SetupReport={items:{label:string;ok:boolean;message:string}[];action:string;selected:string|null;recommendation:{id:string;name:string;latency_ms:number}|null;tested:number;total:number;changed:boolean;check_id?:string;healthy?:boolean};
 type Action='connect'|'helper'|'windows_proxy'|'add_server'|'select';
-function nextSteps(report:SetupReport){
- if(report.changed)return ['Подключение изменилось во время проверки. Нажмите «Проверить и настроить» ещё раз.'];
- switch(report.action){
-  case 'reinstall':return ['Скачайте свежую сборку foxVPN из нашего GitHub и переустановите приложение.','После установки повторите проверку.'];
-  case 'add_server':return ['Добавьте ссылку на VPN-сервер от вашего провайдера.','Выберите добавленный сервер и повторите проверку.'];
-  case 'helper':return ['Нажмите «Установить или обновить компонент macOS».','Подтвердите установку в системном окне macOS, затем повторите проверку.'];
-  case 'wait_helper':return ['Подождите несколько секунд, пока сетевой компонент запустится.','Нажмите «Проверить и настроить» ещё раз.'];
-  case 'windows_proxy':return ['Подготовьте план: foxVPN покажет, как изменит подключение браузеров Windows.','Проверьте предложенные изменения и подтвердите их. Приложение применит план и проверит результат.'];
-  case 'connect':return ['Нажмите «Перейти к подключению».','Дождитесь подключения и повторите проверку.'];
-  default:return [report.recommendation?'Подготовьте план: foxVPN предложит проверенный сервер и покажет изменения.':'Подготовьте план переподключения. foxVPN покажет изменения до их применения.','Подтвердите подходящий план. Если проверка результата не пройдёт, приложение попробует вернуть прежние настройки.'];
- }
+type RepairPlan={id:string;changes:string[];steps:string[];blockers:string[];reconnect:boolean;scope?:string};
+function summary(report:SetupReport){
+ if(report.healthy&&!report.changed)return 'Всё в порядке';
+ if(report.changed)return 'Проверку нужно повторить';
+ if(report.action==='connect')return 'VPN пока отключён';
+ if(report.action==='helper')return 'Нужно обновить сетевой компонент';
+ if(report.action==='add_server')return 'Добавьте VPN-сервер';
+ if(report.action==='wait_helper')return 'Сетевой компонент запускается';
+ return 'Подключению нужна настройка';
+}
+function explanation(report:SetupReport){
+ if(report.healthy&&!report.changed)return 'Подключение работает. Ничего менять не нужно.';
+ if(report.changed)return 'Подключение или настройки изменились во время проверки.';
+ if(report.action==='helper')return 'Откроем установщик macOS. Установка может прервать VPN; права администратора подтвердите в системном окне.';
+ if(report.action==='add_server')return 'Нужна ссылка на сервер от вашего VPN-провайдера.';
+ if(report.action==='wait_helper')return 'Подождите несколько секунд и повторите проверку.';
+ if(report.action==='reinstall')return 'Ядро VPN не прошло проверку. Откройте «Обновления» и установите проверенную сборку foxVPN.';
+ if(report.action==='connect')return 'Сервер доступен. Можно подключиться и проверить интернет.';
+ return 'Проверка нашла проблему. Ниже показано, что foxVPN предлагает сделать.';
 }
 export function SetupAssistant({locked=false,active=false,onAction,session}:{locked?:boolean;active?:boolean;onAction:(action:Action,report:SetupReport)=>Promise<void>;session?:ConfigurationSession}){
- const [report,setReport]=useState<SetupReport|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[confirm,setConfirm]=useState<Action|null>(null);
+ const [open,setOpen]=useState(false),[report,setReport]=useState<SetupReport|null>(null),[plan,setPlan]=useState<RepairPlan|null>(null);
+ const [busy,setBusy]=useState(false),[message,setMessage]=useState(''),[advanced,setAdvanced]=useState(false),[installerOpened,setInstallerOpened]=useState(false);
  const localSession=useConfigurationSession(),configuration=session??localSession;
- const [checked,setChecked]=useState(false);
- useEffect(()=>{let alive=true,dispose:(()=>void)|undefined;void listen<string>('setup-check-progress',e=>{if(alive)setMessage(e.payload)}).then(stop=>{if(alive)dispose=stop;else stop()}).catch(()=>{});return()=>{alive=false;dispose?.()}},[]);
- async function check(){setBusy(true);setReport(null);setConfirm(null);setMessage('Проверяем подключение…');try{setReport(await invoke<SetupReport>('setup_check'));setChecked(true);setMessage('')}catch(e){setMessage(String(e))}finally{setBusy(false)}}
- async function apply(action:Action){if(!report)return;setBusy(true);setConfirm(null);try{await onAction(action,report);setReport(null);setMessage('Повторите проверку, чтобы проверить результат')}catch(e){setMessage(String(e))}finally{setBusy(false)}}
+ const dialog=useRef<HTMLDialogElement>(null),entry=useRef<HTMLButtonElement>(null),generation=useRef(0),mounted=useRef(true),checking=useRef(false);
+ const changing=configuration.phase==='apply'||configuration.phase==='undo'||configuration.phase==='checking';
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;generation.current++}},[]);
+ useEffect(()=>{if(!open)return;const el=dialog.current;if(el&&!el.open){if(typeof el.showModal==='function')el.showModal();else el.setAttribute('open','')}return()=>{if(el?.open&&typeof el.close==='function')el.close()}},[open]);
+ useEffect(()=>{if(!plan)return;const timer=setTimeout(()=>{setPlan(null);setMessage('Проверка устарела. Нажмите «Проверить снова».')},115000);return()=>clearTimeout(timer)},[plan]);
+ useEffect(()=>{let alive=true,dispose:(()=>void)|undefined;void listen<string>('setup-check-progress',e=>{if(alive&&checking.current)setMessage(e.payload)}).then(stop=>{if(alive)dispose=stop;else stop()}).catch(()=>{});return()=>{alive=false;dispose?.()}},[]);
+ async function check(){
+  const token=++generation.current;checking.current=true;setBusy(true);setReport(null);setPlan(null);setInstallerOpened(false);setAdvanced(false);setMessage('Проверяем подключение…');
+  try{
+   const value=await invoke<SetupReport>('setup_check');
+   if(!mounted.current||token!==generation.current)return;
+   setReport(value);setMessage('');
+   if(value.check_id&&!value.changed&&!value.healthy&&!['reinstall','add_server','helper','wait_helper'].includes(value.action)){
+    setMessage('Подбираем исправление…');
+    const prepared=await invoke<RepairPlan>('prepare_setup_plan',{checkId:value.check_id,options:{patch:value.action==='windows_proxy'?{windows_proxy_auto:true}:{},select_recommended:true,connect_after:true}});
+    if(mounted.current&&token===generation.current){setPlan(prepared);setMessage('')}
+   }
+  }catch(e){if(mounted.current&&token===generation.current)setMessage(String(e))}
+  finally{if(mounted.current&&token===generation.current){checking.current=false;setBusy(false)}}
+ }
+ function close(){if(changing)return;generation.current++;checking.current=false;setBusy(false);setOpen(false);setPlan(null);setReport(null);setAdvanced(false);entry.current?.focus()}
+ async function repair(){
+  if(!plan||busy||locked||changing||plan.blockers.length)return;
+  const id=plan.id;setPlan(null);configuration.setOperationId(id);configuration.setPhase('apply');configuration.setMessage('');
+  try{
+   const result=await invoke<import('./configurationSession').ConfigurationOutcome>('apply_setup_plan',{planId:id,approved:true});
+   configuration.setResult(result);configuration.setMessage(result.message);configuration.setPhase('checking');await check();
+  }catch(e){configuration.setMessage(String(e));configuration.setPhase('checking');await check()}
+  finally{configuration.setOperationId(null);configuration.setPhase(null)}
+ }
+ async function special(action:Action){
+  if(!report||busy||locked||changing)return;
+  if(action==='add_server'){const value=report;close();await onAction(action,value);return}
+  setBusy(true);setMessage('');try{await onAction(action,report);if(action==='helper'){setInstallerOpened(true);setMessage('Завершите установку в macOS, затем повторите проверку.')}else{await check()}}catch(e){setMessage(String(e))}finally{setBusy(false)}
+ }
+ async function cancel(){if(!configuration.operationId)return;try{await invoke('cancel_setup_plan',{operationId:configuration.operationId});configuration.setMessage('Останавливаем исправление и возвращаем настройки…')}catch(e){configuration.setMessage(String(e))}}
  const disabled=busy||locked||configuration.phase!==null;
  const healthy=report?.healthy===true&&!report.changed;
  const configurable=report&&!report.changed&&!['reinstall','add_server','helper','wait_helper'].includes(report.action);
- const summary=healthy?'Всё в порядке':report?.changed?'Проверку нужно повторить':report?.action==='connect'?'Сервер доступен. VPN пока отключён':'Подключению нужна настройка';
- return <section className="panel setting-panel" aria-label="Проверка и настройка"><h3>Проверка и настройка</h3><p className="footnote">Проверим подключение и подскажем, что делать. Изменения применяются только после вашего подтверждения.</p><button className="primary" disabled={disabled} onClick={()=>void check()}>{busy?'Проверяем…':'Проверить и настроить'}</button>{message&&<p role="status">{message}</p>}
-  {report&&<>
-   <div className={`setup-result ${healthy?'healthy':''}`} aria-live="polite"><h4>{summary}</h4>{healthy?<p>Подключение работает. Ничего менять не нужно.</p>:<ol>{nextSteps(report).map((step,i)=><li key={i}>{step}</li>)}</ol>}</div>
-   {!healthy&&<div className="bottom-toolbar">{report.action==='add_server'&&<button className="secondary" disabled={disabled||report.changed} onClick={()=>void apply('add_server')}>Добавить сервер</button>}{report.action==='connect'&&<button className="primary" disabled={disabled||active||report.changed} onClick={()=>void apply('connect')}>Перейти к подключению</button>}{report.action==='helper'&&<button className="secondary" disabled={disabled||report.changed} onClick={()=>setConfirm('helper')}>Установить или обновить компонент macOS</button>}{report.action==='windows_proxy'&&!report.check_id&&<button className="primary" disabled={disabled||report.changed} onClick={()=>setConfirm('windows_proxy')}>Настроить Windows автоматически</button>}</div>}
-   <details className="diagnostic-details"><summary>Подробности проверки</summary>{report.items.map((item,i)=><p key={i}><b>{item.ok?'✓':'!'} {item.label}</b> — {item.message}</p>)}{report.tested>0&&report.tested<report.total&&!active&&<p className="footnote">Проверена часть серверов: {report.tested} из {report.total}. Скорость большим файлом не измерялась.</p>}{report.recommendation&&report.recommendation.id!==report.selected&&!report.changed&&<p>Рекомендуемый сервер: <b>{report.recommendation.name}</b> · {report.recommendation.latency_ms} мс <button className="secondary" disabled={disabled||active} onClick={()=>void apply('select')}>Выбрать рекомендуемый сервер</button></p>}<p className="footnote">Проверка соединения не подтверждает отсутствие всех сетевых утечек. Windows подключает совместимые приложения через локальный прокси; VPN всего Mac требует сетевого компонента.</p></details>
-   {report.check_id&&!report.changed&&<LocalAssistant report={report} locked={disabled}/>}
-  </>}
-  {checked&&<div hidden={!configurable&&!configuration.result&&configuration.phase===null}>{healthy?<details><summary>Изменить настройки</summary><ConfigurationAssistant report={report} locked={busy||locked} onDone={check} session={configuration}/></details>:<ConfigurationAssistant report={report} locked={busy||locked} onDone={check} session={configuration}/>}</div>}
-  {confirm&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Подтверждение настройки"><h2>Подтвердите изменение</h2><p>{confirm==='helper'?'Откроется штатный установщик сетевого компонента macOS. Установка может перезапустить VPN. Права администратора подтверждайте только в системном окне. После завершения повторите проверку.':'foxVPN переподключит выбранный сервер и включит автоматическую настройку прокси Windows. Прежние параметры будут сохранены; сценарий настройки и автоматическое определение временно выключатся. При отключении параметры восстановятся. Если прежний ручной прокси уже указывает на foxVPN, он будет выключен. Это изменит маршрут совместимых браузеров.'}</p><div className="modal-actions"><button className="secondary" disabled={disabled} onClick={()=>setConfirm(null)}>Отмена</button><button className="primary" disabled={disabled} onClick={()=>void apply(confirm)}>Подтвердить настройку</button></div></section></div>}
+ const primary=plan?'Исправить':report?.action==='add_server'?'Добавить сервер':report?.action==='helper'&&!installerOpened?'Обновить компонент':report?.action==='windows_proxy'&&!report.check_id?'Настроить Windows':report?.action==='connect'&&!report.check_id?'Подключиться':'Проверить снова';
+ async function primaryAction(){
+  if(plan){await repair();return}
+  if(report?.action==='add_server'){await special('add_server');return}
+  if(report?.action==='helper'&&!installerOpened){await special('helper');return}
+  if(report?.action==='windows_proxy'&&!report.check_id){await special('windows_proxy');return}
+  if(report?.action==='connect'&&!report.check_id){await special('connect');return}
+  await check();
+ }
+ return <section className="panel setting-panel repair-entry" aria-label="Проверка и настройка">
+  <div><h3>Проверка и настройка</h3><p className="footnote">Если интернет не работает, foxVPN проверит подключение и предложит исправление.</p></div>
+  <button ref={entry} className="secondary" disabled={locked||configuration.phase!==null} onClick={()=>{configuration.setMessage('');setOpen(true);void check()}}>Проверить и настроить</button>
+  {open&&<dialog ref={dialog} className="modal repair-dialog" aria-label="Ремонт подключения" aria-describedby="repair-description" onCancel={e=>{e.preventDefault();close()}}>
+   <h2>Ремонт подключения</h2>
+   <div className={`setup-result ${healthy?'healthy':''}`} aria-live="polite"><h3>{changing?'Исправляем подключение…':busy?'Проверяем подключение…':report?summary(report):'Проверка не завершена'}</h3><p id="repair-description">{changing?'Дождитесь проверки результата.':report?explanation(report):'Проверка не меняет настройки подключения.'}</p></div>
+   {message&&<p role="status">{message}</p>}{configuration.message&&<p role="status">{configuration.message}</p>}
+   {plan&&<div className="repair-preview"><h4>Что сделаем</h4>{plan.changes.length>0&&<ul>{plan.changes.map((v,i)=><li key={i}>{v}</li>)}</ul>}<ol>{plan.steps.map((v,i)=><li key={i}>{v}</li>)}</ol>{plan.blockers.map((v,i)=><p role="alert" key={i}>{v}</p>)}<p className="footnote">Изменения начнутся после «Исправить». При ошибке foxVPN попробует вернуть прежние настройки.</p></div>}
+   {report&&!busy&&<details className="diagnostic-details" onToggle={e=>setAdvanced(e.currentTarget.open)}><summary>Подробности и другие варианты</summary>
+    {report.items.map((item,i)=><p key={i}><b>{item.ok?'✓':'!'} {item.label}</b> — {item.message}</p>)}
+    {report.tested>0&&report.tested<report.total&&!active&&<p className="footnote">Проверено серверов: {report.tested} из {report.total}. Большой тест скорости не выполнялся.</p>}
+    {advanced&&report.check_id&&!report.changed&&<LocalAssistant report={report} locked={disabled} inlineConfirmation/>}
+    {advanced&&configurable&&<ConfigurationAssistant report={report} locked={busy||locked} onDone={check} session={configuration} inlineConfirmation onPlanChanged={()=>setPlan(null)}/>}
+   </details>}
+   {report?.action==='windows_proxy'&&!report.check_id&&<p className="footnote">foxVPN переподключится, включит ручной прокси Windows и временно выключит автоматический сценарий. Прежние параметры вернутся при отключении.</p>}
+   <div className="modal-actions repair-actions">
+    {(configuration.phase==='apply'||configuration.phase==='undo')&&configuration.operationId?<button className="secondary" onClick={()=>void cancel()}>Остановить исправление</button>:<button className={healthy?'primary':'secondary'} disabled={changing} onClick={close}>{healthy?'Готово':'Закрыть'}</button>}
+    {!healthy&&<button className="primary" disabled={disabled||!!plan?.blockers.length||(report?.action==='connect'&&!report.check_id&&active)} onClick={()=>void primaryAction()}>{changing?'Исправляем…':busy?'Проверяем…':primary}</button>}
+   </div>
+  </dialog>}
  </section>;
 }
