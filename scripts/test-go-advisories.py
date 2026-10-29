@@ -21,7 +21,7 @@ def stream(events):
 
 class GoAdvisoryTests(unittest.TestCase):
     def setUp(self):
-        self.date = datetime.date(2026, 10, 11)
+        self.date = gate.REVIEWED
         self.advisory = {"id": gate.REVIEW_ID, "schema_version": "1.3.1", "modified": gate.REVIEW_MODIFIED,
                          "summary": "Public OpenPGP advisory fixture",
                          "affected": [{"package": {"name": gate.CRYPTO_MODULE, "ecosystem": "Go"},
@@ -145,7 +145,7 @@ class GoAdvisoryTests(unittest.TestCase):
         events[1]["SBOM"]["go_version"] = "go1.26.9"
         events[1]["SBOM"]["modules"][0]["version"] = "go1.26.9"
         self.assertFalse(self.assess(events=events)["passed"])
-        for date in [datetime.date(2026, 10, 10), datetime.date(2027, 1, 1)]:
+        for date in [datetime.date(2026, 10, 10), datetime.date(2026, 10, 28), datetime.date(2027, 1, 1)]:
             self.assertFalse(self.assess(date=date)["passed"])
 
     def test_advisory_scope_or_trace_package_change_is_not_suppressed(self):
@@ -157,10 +157,19 @@ class GoAdvisoryTests(unittest.TestCase):
         self.assertFalse(self.assess(events=events)["passed"])
 
     def test_module_version_mismatch_fails_closed(self):
-        graph = copy.deepcopy(self.graph)
-        graph[2]["Module"]["Version"] = "v0.56.0"
+        for version in ["v0.56.0", "v0.57.0", "v0.59.0"]:
+            graph = copy.deepcopy(self.graph)
+            graph[2]["Module"]["Version"] = version
+            with self.assertRaises(ValueError):
+                self.assess(graph=graph)
+
+    def test_previous_crypto_version_cannot_reuse_current_review(self):
+        events, graph = copy.deepcopy(self.events), copy.deepcopy(self.graph)
+        events[1]["SBOM"]["modules"][2]["version"] = "v0.57.0"
+        events[-1]["finding"]["trace"][0]["version"] = "v0.57.0"
+        graph[2]["Module"]["Version"] = "v0.57.0"
         with self.assertRaises(ValueError):
-            self.assess(graph=graph)
+            self.assess(events=events, graph=graph)
 
     def test_module_only_openpgp_finding_without_wildcard_is_unresolved(self):
         events = copy.deepcopy(self.events)

@@ -15,11 +15,11 @@ import re
 ROOT_PACKAGE = "github.com/sagernet/sing-box/cmd/sing-box"
 ROOT_MODULE = "github.com/sagernet/sing-box"
 CRYPTO_MODULE = "golang.org/x/crypto"
-CRYPTO_VERSION = "v0.57.0"
+CRYPTO_VERSION = "v0.58.0"
 EXPECTED_GO = "go1.26.10"
 REVIEW_ID = "GO-2026-5932"
 REVIEW_MODIFIED = "2026-07-07T22:15:29Z"
-REVIEWED = datetime.date(2026, 10, 11)
+REVIEWED = datetime.date(2026, 10, 29)
 EXPIRES = datetime.date(2026, 12, 31)
 OPENPGP = CRYPTO_MODULE + "/openpgp"
 OPENPGP_PATHS = {OPENPGP, *[OPENPGP + "/" + name for name in ("packet", "armor", "clearsign", "errors", "elgamal", "s2k")]}

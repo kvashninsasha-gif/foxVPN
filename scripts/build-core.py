@@ -2,7 +2,7 @@
 """Reproducible core from pinned GPL source, reviewed dependency overlay and Go toolchain."""
 import argparse, hashlib, json, os, pathlib, platform, shutil, subprocess, tarfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = '1.14.3-foxVPN.3'
+VERSION = '1.14.3-foxVPN.4'
 TOOLCHAIN = 'go1.26.10'
 TAGS = 'with_utls,with_gvisor,with_clash_api'
 
