@@ -22,8 +22,10 @@ import (
 // The core keeps its dedicated unprivileged UID. The helper returns paths only
 // inside user-selected bundles, and accepts no PID, filename, command or URL.
 type foxProcessSearcher struct {
-	conn  net.Conn
-	mutex sync.Mutex
+	conn     net.Conn
+	once     sync.Once
+	requests chan foxProcessQuery
+	done     chan struct{}
 }
 
 func newFoxProcessSearcher() (Searcher, error, bool) {
@@ -41,13 +43,53 @@ func newFoxProcessSearcher() (Searcher, error, bool) {
 	if err != nil {
 		return nil, err, true
 	}
-	return &foxProcessSearcher{conn: conn}, nil, true
+	return makeFoxProcessSearcher(conn), nil, true
 }
-func (s *foxProcessSearcher) ResetCache()  {}
-func (s *foxProcessSearcher) Close() error { return s.conn.Close() }
+
+// One worker owns stream framing. A caller timeout never closes the channel or
+// leaves a late reply available for the next connection.
+type foxProcessQuery struct {
+	ctx   context.Context
+	frame []byte
+	reply chan foxProcessReply
+}
+type foxProcessReply struct {
+	owner *adapter.ConnectionOwner
+	err   error
+}
+
+func makeFoxProcessSearcher(conn net.Conn) *foxProcessSearcher {
+	s := &foxProcessSearcher{conn: conn, requests: make(chan foxProcessQuery), done: make(chan struct{})}
+	go s.serve()
+	return s
+}
+func (s *foxProcessSearcher) ResetCache() {}
+func (s *foxProcessSearcher) Close() error {
+	var err error
+	s.once.Do(func() { close(s.done); err = s.conn.Close() })
+	return err
+}
+func (s *foxProcessSearcher) serve() {
+	defer s.Close()
+	for {
+		select {
+		case <-s.done:
+			return
+		case q := <-s.requests:
+			if q.ctx.Err() != nil {
+				q.reply <- foxProcessReply{err: q.ctx.Err()}
+				continue
+			}
+			// Bound a genuinely broken peer separately from a short caller deadline.
+			owner, err := s.exchange(q.frame)
+			q.reply <- foxProcessReply{owner, err}
+			if err != nil && err != ErrNotFound {
+				return
+			}
+		}
+	}
+}
 func (s *foxProcessSearcher) FindProcessInfo(ctx context.Context, network string, source, destination netip.AddrPort) (*adapter.ConnectionOwner, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	if !source.IsValid() || !destination.IsValid() {
 		return nil, ErrNotFound
 	}
@@ -81,33 +123,49 @@ func (s *foxProcessSearcher) FindProcessInfo(ctx context.Context, network string
 	}
 	binary.BigEndian.PutUint16(frame[38:40], source.Port())
 	binary.BigEndian.PutUint16(frame[40:42], destination.Port())
-	deadline := time.Now().Add(time.Second)
-	if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
-		deadline = limit
+	lookup, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	q := foxProcessQuery{ctx: lookup, frame: frame, reply: make(chan foxProcessReply, 1)}
+	select {
+	case <-lookup.Done():
+		return nil, lookup.Err()
+	case <-s.done:
+		return nil, net.ErrClosed
+	case s.requests <- q:
 	}
+	select {
+	case <-lookup.Done():
+		return nil, lookup.Err()
+	case <-s.done:
+		return nil, net.ErrClosed
+	case reply := <-q.reply:
+		if err := lookup.Err(); err != nil {
+			return nil, err
+		}
+		return reply.owner, reply.err
+	}
+}
+func (s *foxProcessSearcher) exchange(frame []byte) (*adapter.ConnectionOwner, error) {
+	deadline := time.Now().Add(5 * time.Second)
 	if err := s.conn.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
 	if _, err := io.Copy(s.conn, bytes.NewReader(frame)); err != nil {
-		s.conn.Close()
 		return nil, err
 	}
 	header := make([]byte, 7)
 	if _, err := io.ReadFull(s.conn, header); err != nil {
-		s.conn.Close()
 		return nil, err
 	}
 	length := int(binary.BigEndian.Uint16(header[5:7]))
-	if header[0] == 0 && length == 0 {
+	if header[0] == 0 && length == 0 && bytes.Equal(header[1:5], []byte{0, 0, 0, 0}) {
 		return nil, ErrNotFound
 	}
 	if header[0] != 1 || length == 0 || length >= 4096 {
-		s.conn.Close()
-		return nil, ErrNotFound
+		return nil, fmt.Errorf("invalid foxVPN process response")
 	}
 	path := make([]byte, length)
 	if _, err := io.ReadFull(s.conn, path); err != nil {
-		s.conn.Close()
 		return nil, err
 	}
 	return &adapter.ConnectionOwner{UserId: int32(binary.BigEndian.Uint32(header[1:5])), ProcessPath: string(path)}, nil

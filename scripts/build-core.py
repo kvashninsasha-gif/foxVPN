@@ -2,7 +2,7 @@
 """Reproducible core from pinned GPL source, reviewed dependency overlay and Go toolchain."""
 import argparse, hashlib, json, os, pathlib, platform, shutil, subprocess, tarfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = '1.14.3-foxVPN.4'
+VERSION = '1.14.3-foxVPN.5'
 TOOLCHAIN = 'go1.26.10'
 TAGS = 'with_utls,with_gvisor,with_clash_api'
 
@@ -42,6 +42,9 @@ def build(target, work, network=False, scan=False):
     binary = ROOT/'core'/('foxvpn-network-core' if network else ('sing-box.exe' if goos=='windows' else 'sing-box'))
     binary.parent.mkdir(exist_ok=True)
     stage = work/('network-core' if network else 'proxy-core')
+    if goos == 'darwin':
+        shutil.copyfile(ROOT/'scripts/macos/process_broker_test.go', source/'common/process/foxvpn_process_broker_test.go')
+        subprocess.run(['go','test','-mod=readonly','-race','-tags',TAGS,'./common/process','-run','^TestFoxProcess','-count=1','-timeout=30s'],cwd=source,env=env,check=True)
     subprocess.run(['go','build','-mod=readonly','-trimpath','-tags',TAGS,'-ldflags',f'-s -w -X github.com/sagernet/sing-box/constant.Version={VERSION}','-o',str(stage),'./cmd/sing-box'],cwd=source,env=env,check=True)
     report = work/'govulncheck.json'
     if scan:

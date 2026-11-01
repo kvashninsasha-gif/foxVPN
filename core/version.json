@@ -1,8 +1,8 @@
 {
-  "version": "v1.14.3-foxVPN.4",
+  "version": "v1.14.3-foxVPN.5",
   "upstream_version": "1.14.3",
   "platform": "darwin-arm64",
-  "binary_sha256": "6bcb062267c8acf7400d2f0dd985bdd759fc43e25407f33610b01681b5490e41",
+  "binary_sha256": "d0bf53e1b42b3f8b0544827dff3dde47b4c97fcd94272f4097b390bf17a9a467",
   "source_archive_sha256": "e10dee2a000c3b4f87b33b2a39b30ce8c65a870a5bdda31b3b2f67760d65b37e",
   "source": "https://api.github.com/repos/SagerNet/sing-box/tarball/7054cac5124465ffdb145870d7c01885566711b1",
   "toolchain": "go1.26.10",
@@ -13,5 +13,5 @@
   },
   "official_binary": false,
   "vulnerability_scan": "assessed-binary-symbols-pass",
-  "process_broker_patch_sha256": "afaf1d252d45ac7c668e62cb75009ae8f9ff050d3236132d1d4cf17df770923e"
+  "process_broker_patch_sha256": "63ed6d4a632630aed31afc3bbfc645528679ec064fc671960b238d19926c0721"
 }
