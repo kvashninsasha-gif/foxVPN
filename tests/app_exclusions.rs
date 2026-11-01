@@ -167,6 +167,11 @@ fn actual_core_matches_bundle_and_nested_helper_but_not_sibling_name() {
         while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut client, _)) => {
+                    // Darwin accept inherits O_NONBLOCK from the listener.
+                    // A readiness notification can precede the HTTP payload;
+                    // otherwise read() returns WouldBlock and the fixture
+                    // closes a correctly routed connection without a reply.
+                    client.set_nonblocking(false).unwrap();
                     client
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
