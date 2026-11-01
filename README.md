@@ -2,10 +2,10 @@
 
 VPN-клиент с русским интерфейсом, VLESS/Reality, тёмной темой и правилами маршрутизации.
 
-[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.35/foxVPN_0.1.35_x64-setup.exe)
-[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.35/foxVPN-0.1.35-macOS-arm64.zip)
+[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.36/foxVPN_0.1.36_x64-setup.exe)
+[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.36/foxVPN-0.1.36-macOS-arm64.zip)
 
-**Последняя проверенная сборка: 0.1.35 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.35).
+**Последняя проверенная сборка: 0.1.36 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.36).
 
 | Платформа | Что доступно | Первый запуск |
 | --- | --- | --- |
@@ -13,6 +13,8 @@ VPN-клиент с русским интерфейсом, VLESS/Reality, тём
 | macOS Apple Silicon | VPN всего Mac через сетевой компонент, локальный прокси и правила маршрутизации | Распакуйте ZIP, перенесите foxVPN.app в Applications; сетевой компонент устанавливается из настроек приложения |
 
 Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.34](docs/verification-0.1.34.md).
+
+В 0.1.36 исправлено закрытие служебного канала после задержки определения приложения: поздний ответ больше не блокирует следующие соединения. Добавлены проверки отмены и параллельной нагрузки; правила исключений и торрентов сохранены. [Проверки](docs/verification-0.1.36.md).
 
 В 0.1.35 ремонт подключения собран в одном окне с планом и кнопкой «Исправить». Проверка учитывает настоящий системный HTTPS, временный отказ одного проверочного сайта не перезапускает рабочий туннель, а сравнение серверов при активном VPN не создаёт ложные статусы. Ядро обновлено с исправлениями безопасности. [Проверки и ограничения](docs/verification-0.1.35.md).
 
