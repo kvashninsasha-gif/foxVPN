@@ -2,10 +2,10 @@
 
 VPN-клиент с русским интерфейсом, VLESS/Reality, тёмной темой и правилами маршрутизации.
 
-[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.36/foxVPN_0.1.36_x64-setup.exe)
-[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.36/foxVPN-0.1.36-macOS-arm64.zip)
+[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.37/foxVPN_0.1.37_x64-setup.exe)
+[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.37/foxVPN-0.1.37-macOS-arm64.zip)
 
-**Последняя проверенная сборка: 0.1.36 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.36).
+**Последняя проверенная сборка: 0.1.37 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.37).
 
 | Платформа | Что доступно | Первый запуск |
 | --- | --- | --- |
@@ -13,6 +13,8 @@ VPN-клиент с русским интерфейсом, VLESS/Reality, тём
 | macOS Apple Silicon | VPN всего Mac через сетевой компонент, локальный прокси и правила маршрутизации | Распакуйте ZIP, перенесите foxVPN.app в Applications; сетевой компонент устанавливается из настроек приложения |
 
 Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.34](docs/verification-0.1.34.md).
+
+В 0.1.37 добавлены сохранение причин сбоя после отключения, обнаружение потери служебного канала и проверка системного маршрута. Диагностика различает локальный прокси, системный VPN и отказ отдельного проверочного сайта. [Проверки и ограничения](docs/verification-0.1.37.md).
 
 В 0.1.36 исправлено закрытие служебного канала после задержки определения приложения: поздний ответ больше не блокирует следующие соединения. Добавлены проверки отмены и параллельной нагрузки; правила исключений и торрентов сохранены. [Проверки](docs/verification-0.1.36.md).
 
