@@ -14,6 +14,6 @@ The installed app/helper are still 0.1.36 during this check. An earlier attempt 
 
 ## Release acceptance
 
-Local checks passed: 231 Rust tests, 127 UI tests, TypeScript/Vite build, Clippy with warnings denied, 11 dependency-policy and 19 Go-policy regressions. Both freshly built macOS cores passed the Go advisory gate, including the mandatory process broker race tests. Pending: native macOS privileged routing CI, Windows installer/proxy CI, sealed package/signature/tamper checks, GitHub asset verification and physical acceptance of the new build. Do not treat source changes as an installed or published release.
+Local checks passed: 232 Rust tests (231 workspace tests plus the additional startup-channel regression), 127 UI tests, TypeScript/Vite build, Clippy with warnings denied, 11 dependency-policy and 19 Go-policy regressions. Both freshly built macOS cores passed the Go advisory gate, including the mandatory process broker race tests. Pending: native macOS privileged routing CI, Windows installer/proxy CI, sealed package/signature/tamper checks, GitHub asset verification and physical acceptance of the new build. Do not treat source changes as an installed or published release.
 
 Windows remains a local HTTP/SOCKS proxy. System TUN/WFP and complete application isolation on Windows are not provided. The added route check verifies a fixed generic IPv4 route; it is not a comprehensive IPv6/leak certification.

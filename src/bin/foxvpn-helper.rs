@@ -71,6 +71,9 @@ mod daemon {
             &request.server
         }
     }
+    fn identity_failure(healthy: Option<bool>, error: Option<&str>) -> bool {
+        healthy == Some(false) || error == Some(ipc::IDENTITY_CHANNEL_ERROR)
+    }
     fn retry_delay(failures: u32) -> Duration {
         Duration::from_secs((3u64 << failures.min(5)).min(60))
     }
@@ -432,10 +435,12 @@ mod daemon {
         }
         fn maintain(&mut self) {
             let dead = self.core.as_mut().is_some_and(|c| !c.alive());
-            let identity_failed = self
-                .core
-                .as_ref()
-                .is_some_and(|c| !c.identity_channel_healthy());
+            let identity_failed = identity_failure(
+                self.core
+                    .as_ref()
+                    .map(CoreProcess::identity_channel_healthy),
+                self.error.as_deref(),
+            );
             if identity_failed {
                 self.health.ready = false;
                 self.error = Some(ipc::IDENTITY_CHANNEL_ERROR.into());
@@ -809,6 +814,13 @@ mod daemon {
                 unsafe { fox_verify_socket(client.as_raw_fd(), wrong.as_ptr(), owner) },
                 0
             );
+        }
+        #[test]
+        fn channel_start_failure_does_not_become_a_server_failure_after_core_cleanup() {
+            assert!(identity_failure(None, Some(ipc::IDENTITY_CHANNEL_ERROR)));
+            assert!(identity_failure(Some(false), None));
+            assert!(!identity_failure(Some(true), None));
+            assert!(!identity_failure(None, Some(ipc::PROXY_HTTPS_ERROR)));
         }
         #[test]
         fn retry_backoff_is_bounded() {
