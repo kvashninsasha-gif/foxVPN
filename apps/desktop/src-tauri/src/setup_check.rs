@@ -20,6 +20,8 @@ pub struct Candidate {
 pub struct Report {
     pub(crate) items: Vec<Item>,
     pub(crate) healthy: bool,
+    pub(crate) scope: &'static str,
+    pub(crate) partial: bool,
     pub(crate) action: &'static str,
     selected: Option<String>,
     pub(crate) recommendation: Option<Candidate>,
@@ -82,8 +84,19 @@ fn confirmed_healthy(
         && !changed
         && action == "none"
         && passed("Текущее соединение")
-        && (!system_vpn || (passed("Системный DNS") && passed("Интернет через систему")))
+        && (!system_vpn
+            || (passed("Системный DNS")
+                && passed("Интернет через систему")
+                && passed("Системный маршрут")))
         && items.iter().all(|item| item.ok)
+}
+fn partial_only(partial: bool, changed: bool, items: &[Item]) -> bool {
+    partial
+        && !changed
+        && items
+            .iter()
+            .filter(|item| item.label != "Доступность проверочных сайтов")
+            .all(|item| item.ok)
 }
 pub(crate) fn probe_system_connection() -> bool {
     smart_vpn_engine::connectivity::probe(None).is_ok()
@@ -112,7 +125,7 @@ pub async fn setup_check(
         item(&mut items, "Компонент VPN", core, if core { "Целостность ядра подтверждена" }
             else { "Ядро отсутствует или не прошло проверку. Переустановите проверенную сборку foxVPN" });
         let helper = network_helper::probe(std::time::Duration::ZERO);
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") && profile.settings.tun {
             item(&mut items, "Сетевой компонент macOS", helper == network_helper::Probe::Ready,
                 match helper {
                     network_helper::Probe::Ready => "Компонент соответствует приложению",
@@ -121,6 +134,8 @@ pub async fn setup_check(
                     network_helper::Probe::Starting => "Компонент запускается. Повторите проверку позднее",
                 });
             if profile.settings.tun && helper == network_helper::Probe::Ready && active {
+                let routed=smart_vpn_engine::connectivity::system_tunnel_route();
+                item(&mut items,"Системный маршрут",routed,if routed {"Проверенный внешний IPv4-маршрут проходит через туннель foxVPN"} else {"Системный маршрут обходит туннель foxVPN"});
                 match network_helper::request(&network_helper::Request::Status) {
                     Ok(response) => {
                         let ready = diagnostics::confirmed_remote_start(&response.status, profile.settings.proxy_port);
@@ -133,20 +148,26 @@ pub async fn setup_check(
                 }
             }
         }
+        let scope = if cfg!(target_os="macos") && profile.settings.tun { "mac_system" } else if cfg!(windows) { "windows_proxy" } else { "local_proxy" };
+        let mut partial = false;
         let mut healthy = false;
         let mut successes: Vec<Server> = vec![];
         let mut tested = 0;
         if active {
             if let Some((port, _)) = &current {
                 let _ = app.emit("setup-check-progress", "Проверяем текущее соединение…");
-                healthy = smart_vpn_engine::connectivity::probe(Some(*port)).is_ok();
+                if let Ok(check) = smart_vpn_engine::connectivity::inspect(Some(*port)) {
+                    healthy=check.connected();partial|=check.partial();
+                }
             }
             item(&mut items, "Текущее соединение", healthy, if healthy {
                 "Контрольный HTTPS-запрос через текущий локальный порт прошёл. Подключение не прерывалось"
             } else { "Контрольный запрос не прошёл или состояние неизвестно. Переподключение не выполнялось" });
             if cfg!(target_os = "macos") && profile.settings.tun {
                 let _ = app.emit("setup-check-progress", "Проверяем интернет через системное соединение…");
-                let system_ok = probe_system_connection();
+                let system_ok = smart_vpn_engine::connectivity::inspect(None).is_ok_and(|check| {
+                    partial |= check.partial();check.connected()
+                });
                 item(&mut items, "Интернет через систему", system_ok,
                     if system_ok { "HTTPS-запрос через системные DNS и маршруты прошёл" }
                     else { "HTTPS-запрос через системные DNS и маршруты не прошёл. Настройки не менялись" });
@@ -191,6 +212,8 @@ pub async fn setup_check(
                 Err(_) => { item(&mut items, "Прокси Windows", false, "Не удалось прочитать параметры Windows"); false }
             }
         } else { true };
+        if partial { item(&mut items, "Доступность проверочных сайтов", false,
+            "Часть контрольных сайтов не ответила. Основной путь работает; автоматическое переподключение из-за одного сайта не требуется"); }
         let latest = state.profile.lock().map_err(|_| "Не удалось прочитать настройки")?.clone();
         let latest_current = state.core.lock().map_err(|_| "Не удалось прочитать состояние")?
             .as_ref().map(|c| (c.proxy_port, c.secret.clone()));
@@ -210,7 +233,8 @@ pub async fn setup_check(
             cfg!(windows), proxy_matches, healthy) };
         let healthy = confirmed_healthy(&initial_status, changed, next,
             cfg!(target_os = "macos") && profile.settings.tun, &items);
-        let report = Report { items, healthy, action: next, selected: latest.selected, recommendation, tested,
+        let partial = partial_only(partial, changed, &items);
+        let report = Report { items, healthy, scope, partial, action: next, selected: latest.selected, recommendation, tested,
             total: profile.servers.len(), changed, check_id: if changed { String::new() } else { uuid::Uuid::new_v4().to_string() }, verified: successes };
         if !changed {
             super::ai::remember(&app, &report, initial_stamp.clone())?;
@@ -228,6 +252,8 @@ pub(crate) fn private_fixture_report() -> Report {
             message: "PRIVATE_TOKEN PRIVATE_URI".into(),
         }],
         healthy: false,
+        scope: "mac_system",
+        partial: false,
         action: "connect",
         selected: Some("PRIVATE_SERVER_ID".into()),
         recommendation: Some(Candidate {
@@ -276,6 +302,8 @@ mod tests {
         item(&mut items, "Интернет через систему", false, "fixture");
         assert!(!confirmed_healthy("connected", false, "none", true, &items));
         items.last_mut().unwrap().ok = true;
+        assert!(!confirmed_healthy("connected", false, "none", true, &items));
+        item(&mut items, "Системный маршрут", true, "fixture");
         assert!(confirmed_healthy("connected", false, "none", true, &items));
         item(&mut items, "Системный DNS", false, "fixture");
         assert!(!confirmed_healthy(
@@ -285,6 +313,22 @@ mod tests {
             false,
             &items
         ));
+    }
+    #[test]
+    fn partial_site_failure_does_not_hide_a_broken_system_route() {
+        let mut items = vec![];
+        item(&mut items, "Текущее соединение", true, "fixture");
+        item(
+            &mut items,
+            "Доступность проверочных сайтов",
+            false,
+            "fixture",
+        );
+        assert!(partial_only(true, false, &items));
+        assert!(!partial_only(true, true, &items));
+        item(&mut items, "Системный маршрут", false, "fixture");
+        assert!(!partial_only(true, false, &items));
+        assert!(!partial_only(false, false, &items));
     }
     #[test]
     fn pac_and_auto_detection_do_not_count_as_confirmed_manual_proxy() {

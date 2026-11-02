@@ -219,3 +219,34 @@ fn manual_comparison_does_not_start_extra_cores_or_mark_servers_down_during_a_tu
         assert!(state.core.lock().unwrap().is_none());
     }
 }
+
+#[test]
+fn fresh_history_is_visible_after_stop_without_recreating_a_core() {
+    use smart_vpn_engine::network_helper::{Request, Response, Status};
+    let directory = tempfile::tempdir().unwrap();
+    let state = fixture(directory.path().join("profile.enc"));
+    state.profile.lock().unwrap().settings.tun = true;
+    let result = runtime_impl(&state, true, |request| {
+        Ok(Response {
+            status: Status {
+                protocol: smart_vpn_engine::network_helper::PROTOCOL,
+                helper_version: "0.1.37".into(),
+                ..Default::default()
+            },
+            logs: if matches!(request, Request::Logs) {
+                vec!["История: служебный канал недоступен".into()]
+            } else {
+                vec![]
+            },
+            error: None,
+        })
+    })
+    .unwrap();
+    assert_eq!(result.status, "disconnected");
+    assert!(result.proxy_port.is_none());
+    assert!(state.core.lock().unwrap().is_none());
+    assert_eq!(
+        result.logs,
+        Some(vec!["История: служебный канал недоступен".into()])
+    );
+}

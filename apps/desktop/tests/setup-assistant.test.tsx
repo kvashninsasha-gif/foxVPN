@@ -88,3 +88,17 @@ it('repair failures are shown after the automatic recheck and do not claim succe
  await screen.findByText(/Прежние настройки возвращены/);await screen.findByRole('button',{name:'Исправить'});expect(screen.queryByText('Всё в порядке')).toBeNull();
  expect(ipc.invoke.mock.calls.filter(([c])=>c==='apply_setup_plan')).toHaveLength(1);
 });
+it('a healthy local proxy never claims that the entire Mac is protected',async()=>{
+ value={...report,healthy:true,scope:'local_proxy'};render(<SetupAssistant onAction={vi.fn()} active/>);begin();
+ await screen.findByText('Локальный прокси работает');
+ expect(screen.queryByText('Всё в порядке')).toBeNull();
+ expect(screen.getByText(/Для трафика всего Mac включите системный VPN/)).toBeTruthy();
+ expect(ipc.invoke.mock.calls.map(([c])=>c)).toEqual(['setup_check']);
+});
+it('partial site failure does not offer a disruptive automatic repair',async()=>{
+ value={...report,healthy:false,partial:true,scope:'mac_system'};render(<SetupAssistant onAction={vi.fn()} active/>);begin();
+ await screen.findByText('Часть проверок связи не прошла');
+ expect(screen.queryByText('Всё в порядке')).toBeNull();expect(screen.queryByRole('button',{name:'Исправить'})).toBeNull();
+ expect(screen.getByRole('button',{name:'Проверить снова'})).toBeTruthy();
+ expect(ipc.invoke.mock.calls.map(([c])=>c)).toEqual(['setup_check']);
+});

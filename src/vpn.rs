@@ -245,6 +245,19 @@ pub fn free_port() -> Result<u16, String> {
         .map_err(|_| crate::text("message_273").into())
 }
 impl CoreProcess {
+    pub fn identity_channel_healthy(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self._app_broker
+                .as_ref()
+                .is_none_or(crate::app_process_broker::Broker::healthy)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            true
+        }
+    }
+
     pub fn start(
         binary: &Path,
         s: &Server,

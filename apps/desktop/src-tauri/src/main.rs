@@ -180,7 +180,12 @@ fn snapshot_impl(s: &State) -> Snapshot {
         profile,
         status: s.status.lock().unwrap().clone(),
         proxy_port,
-        core_version: "1.14.3-foxVPN.3".into(),
+        core_version: std::fs::read(s.binary.with_file_name("version.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(str::to_owned))
+            .filter(|v| semver::Version::parse(v.trim_start_matches('v')).is_ok())
+            .unwrap_or_else(|| "неизвестна".into()),
         logs,
         helper_available,
         platform: std::env::consts::OS,
@@ -332,9 +337,9 @@ fn runtime_impl(
                     .into();
                 }
             }
-            if let Some(logs) = helper_logs {
+            if let Some(logs) = &helper_logs {
                 if let Some(c) = core.as_ref() {
-                    *c.logs.lock().unwrap() = logs;
+                    *c.logs.lock().unwrap() = logs.clone();
                 }
             }
         }
@@ -343,9 +348,15 @@ fn runtime_impl(
         status: s.status.lock().unwrap().clone(),
         proxy_port: core.as_ref().map(|c| c.proxy_port),
         logs: include_logs.then(|| {
-            core.as_ref()
-                .map(|c| c.logs.lock().unwrap().clone())
-                .unwrap_or_default()
+            helper_logs
+                .filter(|_| {
+                    operation.is_some() && s.wanted.current(ticket) && !s.wanted.pending(ticket)
+                })
+                .unwrap_or_else(|| {
+                    core.as_ref()
+                        .map(|c| c.logs.lock().unwrap().clone())
+                        .unwrap_or_default()
+                })
         }),
         connection_error,
         active_server_id,

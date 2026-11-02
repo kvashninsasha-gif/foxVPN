@@ -4,10 +4,12 @@ import {listen} from '@tauri-apps/api/event';
 import {LocalAssistant} from './LocalAssistant';
 import {ConfigurationAssistant} from './ConfigurationAssistant';
 import {useConfigurationSession,type ConfigurationSession} from './configurationSession';
-export type SetupReport={items:{label:string;ok:boolean;message:string}[];action:string;selected:string|null;recommendation:{id:string;name:string;latency_ms:number}|null;tested:number;total:number;changed:boolean;check_id?:string;healthy?:boolean};
+export type SetupReport={items:{label:string;ok:boolean;message:string}[];action:string;selected:string|null;recommendation:{id:string;name:string;latency_ms:number}|null;tested:number;total:number;changed:boolean;check_id?:string;healthy?:boolean;scope?:string;partial?:boolean};
 type Action='connect'|'helper'|'windows_proxy'|'add_server'|'select';
 type RepairPlan={id:string;changes:string[];steps:string[];blockers:string[];reconnect:boolean;scope?:string};
 function summary(report:SetupReport){
+ if(report.partial&&!report.changed)return 'Часть проверок связи не прошла';
+ if(report.healthy&&!report.changed&&report.scope==='local_proxy')return 'Локальный прокси работает';
  if(report.healthy&&!report.changed)return 'Всё в порядке';
  if(report.changed)return 'Проверку нужно повторить';
  if(report.action==='connect')return 'VPN пока отключён';
@@ -17,6 +19,8 @@ function summary(report:SetupReport){
  return 'Подключению нужна настройка';
 }
 function explanation(report:SetupReport){
+ if(report.partial&&!report.changed)return 'Основное соединение работает. Повторите проверку позднее; настройки автоматически не менялись.';
+ if(report.healthy&&!report.changed&&report.scope==='local_proxy')return 'Проверен только локальный прокси. Для трафика всего Mac включите системный VPN в настройках.';
  if(report.healthy&&!report.changed)return 'Подключение работает. Ничего менять не нужно.';
  if(report.changed)return 'Подключение или настройки изменились во время проверки.';
  if(report.action==='helper')return 'Откроем установщик macOS. Установка может прервать VPN; права администратора подтвердите в системном окне.';
@@ -42,7 +46,7 @@ export function SetupAssistant({locked=false,active=false,onAction,session}:{loc
    const value=await invoke<SetupReport>('setup_check');
    if(!mounted.current||token!==generation.current)return;
    setReport(value);setMessage('');
-   if(value.check_id&&!value.changed&&!value.healthy&&!['reinstall','add_server','helper','wait_helper'].includes(value.action)){
+   if(value.check_id&&!value.changed&&!value.healthy&&!value.partial&&!['reinstall','add_server','helper','wait_helper'].includes(value.action)){
     setMessage('Подбираем исправление…');
     const prepared=await invoke<RepairPlan>('prepare_setup_plan',{checkId:value.check_id,options:{patch:value.action==='windows_proxy'?{windows_proxy_auto:true}:{},select_recommended:true,connect_after:true}});
     if(mounted.current&&token===generation.current){setPlan(prepared);setMessage('')}
@@ -67,8 +71,8 @@ export function SetupAssistant({locked=false,active=false,onAction,session}:{loc
  }
  async function cancel(){if(!configuration.operationId)return;try{await invoke('cancel_setup_plan',{operationId:configuration.operationId});configuration.setMessage('Останавливаем исправление и возвращаем настройки…')}catch(e){configuration.setMessage(String(e))}}
  const disabled=busy||locked||configuration.phase!==null;
- const healthy=report?.healthy===true&&!report.changed;
- const configurable=report&&!report.changed&&!['reinstall','add_server','helper','wait_helper'].includes(report.action);
+ const healthy=report?.healthy===true&&!report.changed&&!report.partial;
+ const configurable=report&&!report.changed&&!report.partial&&!['reinstall','add_server','helper','wait_helper'].includes(report.action);
  const primary=plan?'Исправить':report?.action==='add_server'?'Добавить сервер':report?.action==='helper'&&!installerOpened?'Обновить компонент':report?.action==='windows_proxy'&&!report.check_id?'Настроить Windows':report?.action==='connect'&&!report.check_id?'Подключиться':'Проверить снова';
  async function primaryAction(){
   if(plan){await repair();return}

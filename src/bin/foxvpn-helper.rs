@@ -6,6 +6,7 @@ fn main() {
 mod daemon {
     use serde::{Deserialize, Serialize};
     use smart_vpn_engine::{
+        diagnostic_history::{Code, History},
         network_helper::{self as ipc, Request, Response, StartRequest, Status, CORE_UID},
         vpn::CoreProcess,
     };
@@ -47,6 +48,7 @@ mod daemon {
     type HealthProbe = (u64, u32, std::sync::mpsc::Receiver<Result<(), String>>);
     struct Manager {
         core: Option<CoreProcess>,
+        history: History,
         saved: Saved,
         last: Instant,
         error: Option<String>,
@@ -128,7 +130,10 @@ mod daemon {
         })
     }
     fn system_health() -> Result<(), String> {
-        smart_vpn_engine::connectivity::probe(None)
+        if !smart_vpn_engine::connectivity::system_tunnel_route() {
+            return Err(ipc::SYSTEM_ROUTE_ERROR.into());
+        }
+        smart_vpn_engine::connectivity::probe(None).map_err(|_| ipc::SYSTEM_HTTPS_ERROR.into())
     }
     fn guard_rules() -> String {
         format!("pass out quick on lo0 all no state\npass out quick on utun99 all no state\npass out quick inet proto udp from any port 68 to any port 67 no state\npass out quick inet6 proto icmp6 icmp6-type {{ 133, 134, 135, 136 }} no state\npass out quick proto {{ tcp, udp }} all user {CORE_UID} keep state\nblock drop out quick all\n")
@@ -169,7 +174,12 @@ mod daemon {
                 helper_version: env!("CARGO_PKG_VERSION").into(),
                 core_alive: running,
                 dns_active: unsafe { fox_dns_active() } != 0,
-                running: running && self.health.ready,
+                running: running
+                    && self.health.ready
+                    && self
+                        .core
+                        .as_ref()
+                        .is_some_and(CoreProcess::identity_channel_healthy),
                 wanted: self.saved.wanted.is_some(),
                 error: self.error.clone(),
                 active_server_id: self
@@ -264,6 +274,7 @@ mod daemon {
             let dns_ok = unsafe { fox_dns(0) } == 1;
             // Keep the traffic guard if DNS cleanup failed. Retrying Stop is safe.
             if !dns_ok {
+                self.history.record(Code::DnsFailed);
                 return Err(message("helper_dns_error"));
             }
             self.release_guard()?;
@@ -271,6 +282,7 @@ mod daemon {
             if !self.status().stopped() {
                 return Err(message("helper_stop_unconfirmed"));
             }
+            self.history.record(Code::Stopped);
             self.error = None;
             let _ = fixed_command("/usr/bin/dscacheutil", &["-flushcache"]);
             Ok(())
@@ -312,7 +324,21 @@ mod daemon {
             self.health_probe = None;
             self.health = Default::default();
             let result = self.restart_inner();
-            if result.is_err() {
+            if let Err(error) = &result {
+                let code = if error == &message("helper_dns_error") {
+                    Code::DnsFailed
+                } else if error == ipc::PROXY_HTTPS_ERROR {
+                    Code::ProxyHttpsFailed
+                } else if error == ipc::SYSTEM_HTTPS_ERROR {
+                    Code::SystemHttpsFailed
+                } else if error == ipc::SYSTEM_ROUTE_ERROR {
+                    Code::SystemRouteLost
+                } else if error == ipc::IDENTITY_CHANNEL_ERROR {
+                    Code::IdentityChannelLost
+                } else {
+                    Code::StartFailed
+                };
+                self.history.record(code);
                 self.health.ready = false;
                 self.core = None;
                 self.saved.pid = None;
@@ -382,13 +408,22 @@ mod daemon {
                 return Err(message("helper_dns_error"));
             }
             let _ = fixed_command("/usr/bin/dscacheutil", &["-flushcache"]);
-            smart_vpn_engine::connectivity::probe(Some(core.proxy_port))?;
+            smart_vpn_engine::connectivity::probe(Some(core.proxy_port)).map_err(
+                |_| -> String {
+                    if core.identity_channel_healthy() {
+                        ipc::PROXY_HTTPS_ERROR.into()
+                    } else {
+                        ipc::IDENTITY_CHANNEL_ERROR.into()
+                    }
+                },
+            )?;
             // A proxy health check alone misses broken system DNS and TUN routing.
             system_health()?;
             self.saved.pid = Some(core.child.id());
             self.core = Some(core);
             self.error = None;
             self.health.ready = true;
+            self.history.record(Code::Started);
             self.failures = 0;
             self.last_health = Instant::now();
             save(&self.saved)?;
@@ -397,9 +432,24 @@ mod daemon {
         }
         fn maintain(&mut self) {
             let dead = self.core.as_mut().is_some_and(|c| !c.alive());
+            let identity_failed = self
+                .core
+                .as_ref()
+                .is_some_and(|c| !c.identity_channel_healthy());
+            if identity_failed {
+                self.health.ready = false;
+                self.error = Some(ipc::IDENTITY_CHANNEL_ERROR.into());
+                self.history.record(Code::IdentityChannelLost);
+            }
+            if dead {
+                self.history.record(Code::CoreExited);
+            }
             let epoch = unsafe { fox_network_epoch() };
             let changed = epoch != self.epoch;
             if changed {
+                if self.saved.wanted.is_some() {
+                    self.history.record(Code::NetworkChanged);
+                }
                 // A new network must not inherit an old result or 60-second backoff.
                 self.failures = 0;
                 self.health_probe = None;
@@ -418,11 +468,22 @@ mod daemon {
                                 .is_some_and(|core| core.child.id() == pid) =>
                     {
                         match result.unwrap_or_else(|_| Err(message("helper_system_error"))) {
-                            Ok(()) => {
+                            Ok(()) if !identity_failed => {
+                                if !self.health.ready {
+                                    self.history.record(Code::Recovered);
+                                }
                                 self.health.observe(true);
                                 self.error = None;
                             }
+                            Ok(()) => (), // A reply from before channel loss cannot restore readiness.
                             Err(error) => {
+                                if self.health.ready {
+                                    self.history.record(if error == ipc::SYSTEM_ROUTE_ERROR {
+                                        Code::SystemRouteLost
+                                    } else {
+                                        Code::HttpsFailed
+                                    });
+                                }
                                 self.health.observe(false);
                                 self.error = Some(error);
                             }
@@ -455,7 +516,11 @@ mod daemon {
                 .wanted
                 .as_ref()
                 .is_some_and(|r| r.settings.restore)
-                && (dead || changed || self.core.is_none() || self.health.needs_restart())
+                && (dead
+                    || identity_failed
+                    || changed
+                    || self.core.is_none()
+                    || self.health.needs_restart())
                 && (changed || self.last.elapsed() >= retry_delay(self.failures))
                 && Instant::now() >= self.pause_until
             {
@@ -465,6 +530,7 @@ mod daemon {
                     .as_ref()
                     .is_some_and(|r| r.settings.failover)
                     && !changed
+                    && !identity_failed
                 {
                     let count = self
                         .saved
@@ -475,6 +541,7 @@ mod daemon {
                 }
                 self.epoch = unsafe { fox_network_epoch() };
                 if let Err(error) = self.restart() {
+                    self.history.record(Code::RestartFailed);
                     self.failures = self.failures.saturating_add(1);
                     self.error = Some(error);
                 }
@@ -566,6 +633,11 @@ mod daemon {
         saved.owner_uid = owner;
         let mut manager = Manager {
             core: None,
+            history: History::open(
+                PathBuf::from("/Library/PrivilegedHelperTools/foxVPN/diagnostic-history.json"),
+                0,
+                owner,
+            ),
             saved,
             last: Instant::now() - Duration::from_secs(10),
             error: None,
@@ -659,14 +731,13 @@ mod daemon {
                         }
                         Ok(Request::FinalizeUpdate) => (store.finalize(current_peer).err(), vec![]),
                         Ok(Request::Status) => (None, vec![]),
-                        Ok(Request::Logs) => (
-                            None,
-                            manager
-                                .core
-                                .as_ref()
-                                .map(|c| safe_logs(&c.logs))
-                                .unwrap_or_default(),
-                        ),
+                        Ok(Request::Logs) => (None, {
+                            let mut logs = manager.history.lines();
+                            if let Some(core) = &manager.core {
+                                logs.extend(safe_logs(&core.logs));
+                            }
+                            logs
+                        }),
                         Err(_) => (Some(message("helper_invalid")), vec![]),
                     };
                     if let Some(error) = &error {

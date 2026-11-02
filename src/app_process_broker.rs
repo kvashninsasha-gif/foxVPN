@@ -21,9 +21,24 @@ use std::{
 pub struct Broker {
     control: UnixStream,
     closing: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Broker {
+    pub fn healthy(&self) -> bool {
+        if !self.alive.load(Ordering::SeqCst) {
+            return false;
+        }
+        // The peer may close while the worker is still resolving an owner.
+        // Poll only terminal flags: never consume framed request bytes here.
+        let mut fd = libc::pollfd {
+            fd: self.control.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: libc::POLLIN,
+        };
+        let result = unsafe { libc::poll(&mut fd, 1, 0) };
+        result >= 0 && fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
+    }
     pub fn attach(
         command: &mut Command,
         apps: &[Application],
@@ -55,10 +70,19 @@ impl Broker {
         }
         let closing = Arc::new(AtomicBool::new(false));
         let stopped = closing.clone();
+        let alive = Arc::new(AtomicBool::new(true));
+        let running = alive.clone();
         let apps = apps.to_vec();
         let worker = std::thread::Builder::new()
             .name("foxvpn-app-query".into())
             .spawn(move || {
+                struct Life(Arc<AtomicBool>);
+                impl Drop for Life {
+                    fn drop(&mut self) {
+                        self.0.store(false, Ordering::SeqCst);
+                    }
+                }
+                let _life = Life(running);
                 while !stopped.load(Ordering::SeqCst) {
                     let mut request = [0u8; 44];
                     match server.read(&mut request[..1]) {
@@ -102,6 +126,7 @@ impl Broker {
             Self {
                 control,
                 closing,
+                alive,
                 worker: Some(worker),
             },
             child,
@@ -323,6 +348,38 @@ fn snapshot(network: u8) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closed_or_invalid_child_channel_becomes_unhealthy_without_network_changes() {
+        for malformed in [false, true] {
+            let mut cmd = Command::new("/usr/bin/true");
+            let (broker, mut peer) = Broker::attach(&mut cmd, &[]).unwrap();
+            assert!(broker.healthy());
+            if malformed {
+                peer.write_all(&[0; 44]).unwrap();
+            } else {
+                drop(peer);
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while broker.healthy() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(!broker.healthy(), "closed ownership channel stayed healthy");
+        }
+    }
+    #[test]
+    fn peer_close_is_detected_even_before_the_worker_exits() {
+        let (control, peer) = UnixStream::pair().unwrap();
+        let broker = Broker {
+            control,
+            closing: Arc::new(AtomicBool::new(false)),
+            alive: Arc::new(AtomicBool::new(true)),
+            worker: None,
+        };
+        assert!(broker.healthy());
+        drop(peer);
+        assert!(broker.alive.load(Ordering::SeqCst));
+        assert!(!broker.healthy());
+    }
     #[test]
     fn current_user_tcp_owner_is_identified_without_admin_or_private_paths() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -45,6 +45,12 @@ pub struct Status {
     pub active_server_id: Option<String>,
 }
 pub const PROTOCOL: u32 = 4;
+pub const PROXY_HTTPS_ERROR: &str = "VPN-сервер не прошёл проверку HTTPS через локальный прокси";
+pub const SYSTEM_HTTPS_ERROR: &str =
+    "Локальный прокси работает, но HTTPS через системный туннель не проходит";
+pub const SYSTEM_ROUTE_ERROR: &str = "Системный маршрут обходит туннель foxVPN. Переподключите VPN";
+pub const IDENTITY_CHANNEL_ERROR: &str =
+    "Служебная проверка приложений недоступна. Переподключите VPN";
 impl Status {
     pub fn compatible(&self) -> bool {
         self.protocol == PROTOCOL

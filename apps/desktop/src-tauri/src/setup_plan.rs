@@ -402,7 +402,8 @@ fn build(
     let healthy = item(report, "Текущее соединение") == Some(true)
         && (!after.settings.tun
             || (item(report, "Системный DNS") == Some(true)
-                && item(report, "Интернет через систему") == Some(true)));
+                && item(report, "Интернет через систему") == Some(true)
+                && item(report, "Системный маршрут") == Some(true)));
     let reconnect = active && (modifies || !healthy || !options.connect_after);
     let mut steps = vec![];
     if options.select_recommended && active {
@@ -1163,6 +1164,7 @@ mod tests {
         for label in [
             "Текущее соединение",
             "Системный DNS",
+            "Системный маршрут",
             "Интернет через систему",
         ] {
             let mut item = base.clone();
@@ -1182,7 +1184,11 @@ mod tests {
         )
         .unwrap();
         assert!(!plan.reconnect);
-        for failed in ["Системный DNS", "Интернет через систему"] {
+        for failed in [
+            "Системный DNS",
+            "Системный маршрут",
+            "Интернет через систему",
+        ] {
             let mut broken = r.clone();
             broken
                 .items
