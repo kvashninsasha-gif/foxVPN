@@ -18,6 +18,15 @@ Local checks passed: 232 Rust tests (231 workspace tests plus the additional sta
 
 Each packaged Mac core passed 72 runtime scenarios. Packaged Mac local AI passed six cases and rejection/cleanup checks. Sealed Mac update installation/tamper, signed component preparation and Windows signed-cache/version-tamper checks passed. Release v0.1.37 is published with 15 assets; every remote asset size and SHA256 matched local files before and after publication. Both feeds are updated only after publication.
 
-Physical acceptance of 0.1.37 remains pending. The laptop keeps the verified working 0.1.36 connection; no new build or helper was installed during this release. This distinction avoids claiming CI results as physical acceptance.
+At publication, physical acceptance of 0.1.37 was pending and the laptop remained on working 0.1.36. The subsequent physical check is recorded below; it does not imply a complete leak or roaming test.
 
 Windows remains a local HTTP/SOCKS proxy. System TUN/WFP and complete application isolation on Windows are not provided. The added route check verifies a fixed generic IPv4 route; it is not a comprehensive IPv6/leak certification.
+
+
+## Physical laptop check, 3 November 2026
+
+The installed app and compatible helper are now both 0.1.37. Before intervention, the Settings UI showed TUN and Kill Switch unchecked; the helper was disconnected with no desired session. Hiddify system proxy flags were active. This configuration does not capture all Mac traffic, regardless of the selected VPN server.
+
+Enabled and saved TUN and Kill Switch through Settings, preserving the server, Smart mode, rules and other preferences. Starting the signed installed executable confirmed utun99, active system DNS and Kill Switch. With environment/system proxy bypassed explicitly, gstatic, Cloudflare and YouTube returned HTTP 204 and the external egress matched the user's VPS. Only after these independent checks were the redundant Hiddify system proxy flags disabled. Sixteen concurrent HTTPS checks passed; four further helper samples over approximately 24 seconds remained connected. The installed connection was left working; no app rebuild or replacement was needed for this restoration.
+
+The event that switched the profile into local-proxy mode is not established. Source inspection confirms that `prepare_proxy` intentionally disables TUN and Kill Switch after the local-proxy dialog is confirmed; this is a possible path, not proof of the user's actions. The macOS local-proxy dialog still uses an outdated explanation claiming whole-device capture is unsupported (`proxy_setup_intro`), despite the available helper. This UI wording should be corrected in a future application release. Typed network history does not currently record profile-edit provenance. These limits prevent attributing the switch to an update, automatic repair or a user action without evidence.
