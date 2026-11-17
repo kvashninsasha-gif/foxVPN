@@ -4,6 +4,9 @@ import argparse,hashlib,importlib.util,json,os,platform,shutil,subprocess,tarfil
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser();p.add_argument('--platform',choices=['windows-amd64','darwin-arm64'],default='darwin-arm64');p.add_argument('--work-dir',type=Path,required=True);a=p.parse_args()
+# go build runs inside the extracted source. Keep its output and the subsequent
+# scanner pointed at the same file even when CI supplies a relative work path.
+a.work_dir=a.work_dir.resolve()
 m=json.loads((root/'vendor/xray-source.json').read_text());archive=root/f'vendor/xray-{m["version"]}-source.tar.gz'
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 assert sha(archive)==m['sha256'];a.work_dir.mkdir(parents=True,exist_ok=True)
