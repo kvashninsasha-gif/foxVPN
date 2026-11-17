@@ -1,0 +1,10 @@
+{
+  "version": "26.11.9",
+  "commit": "676eaf66f8f05d4d558ee7a74b4736623d3feeb9",
+  "sha256": "3932cefef227439f569eb3988ca206b505467be075967a4397452a3ffe9ef033",
+  "source": "https://github.com/XTLS/Xray-core",
+  "toolchain": "go1.27.4",
+  "platform": "darwin-arm64",
+  "binary_sha256": "904600d819bd6be7d36531f7bbe3869d95f8571a48afe3a95bb696343f68cb7e",
+  "vulnerability_scan": "zero-findings"
+}

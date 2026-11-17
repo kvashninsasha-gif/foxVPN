@@ -32,6 +32,10 @@ pub fn domain_match(r: &Rule) -> Value {
     }
 }
 pub fn outbound(s: &Server) -> Value {
+    if s.transport == "xhttp" {
+        return json!({"type":"foxvpn-xhttp-requires-sidecar","tag":"vpn"});
+    }
+
     let mut v = json!({"type":"vless","tag":"vpn","server":s.address,"server_port":s.port,"uuid":s.uuid,"domain_resolver":"bootstrap"});
     let p = &s.params;
     if let Some(f) = p.get("flow").filter(|f| !f.is_empty()) {
@@ -74,6 +78,20 @@ pub fn config(
     api_port: u16,
     secret: &str,
 ) -> Result<Value, String> {
+    config_internal(s, settings, rules, port, api_port, secret, None)
+}
+fn config_internal(
+    s: &Server,
+    settings: &Settings,
+    rules: &[Rule],
+    port: u16,
+    api_port: u16,
+    secret: &str,
+    bridge: Option<Value>,
+) -> Result<Value, String> {
+    if s.transport == "xhttp" && bridge.is_none() {
+        return Err("XHTTP требует встроенного модуля Xray Windows; отдельный экспорт конфигурации пока недоступен".into());
+    }
     settings.validate()?;
     crate::routing::validate(rules)?;
     let default = if settings.mode == Mode::Direct {
@@ -160,7 +178,8 @@ pub fn config(
     if settings.tun {
         inbounds.push(json!({"type":"tun","tag":"tun-in","address":["172.29.0.1/30","fdfe:dcba:9876::1/126"],"auto_route":true,"strict_route":true,"stack":"mixed"}));
     }
-    let mut cfg = json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[outbound(s),{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}});
+    let transport_outbound = bridge.unwrap_or_else(|| outbound(s));
+    let mut cfg = json!({"log":{"level":"warn","timestamp":true},"dns":{"reverse_mapping":true,"servers":[bootstrap,dns_server("dns-direct","direct"),dns_server("dns-vpn","vpn")],"rules":dns_rules,"final":if default=="direct"{"dns-direct"}else{"dns-vpn"}},"inbounds":inbounds,"outbounds":[transport_outbound,{"type":"direct","tag":"direct"}],"route":{"rules":route,"final":default,"auto_detect_interface":true,"default_domain_resolver":"bootstrap"},"experimental":{"clash_api":{"external_controller":format!("127.0.0.1:{api_port}"),"secret":secret,"access_control_allow_origin":[]}}});
     if cfg!(any(target_os = "macos", windows)) || app_exclusions || windows_exclusions {
         cfg["route"]["find_process"] = json!(true);
     }
@@ -237,6 +256,8 @@ pub struct CoreProcess {
     pub logs: Arc<Mutex<Vec<String>>>,
     #[cfg(windows)]
     _job: crate::process_lifetime::ProcessJob,
+    #[cfg(any(windows, feature = "test-support"))]
+    xhttp: Option<crate::xhttp::Sidecar>,
 }
 pub fn free_port() -> Result<u16, String> {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -245,6 +266,10 @@ pub fn free_port() -> Result<u16, String> {
         .map_err(|_| crate::text("message_273").into())
 }
 impl CoreProcess {
+    #[cfg(feature = "test-support")]
+    pub fn transport_proxy_port(&self) -> Option<u16> {
+        self.xhttp.as_ref().map(|v| v.port)
+    }
     pub fn identity_channel_healthy(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
@@ -317,7 +342,17 @@ impl CoreProcess {
             api_port = free_port()?
         }
         let secret = Uuid::new_v4().to_string();
-        let mut cfg = config(s, settings, rules, port, api_port, &secret)?;
+        #[cfg(any(windows, feature = "test-support"))]
+        let xhttp = if s.transport == "xhttp" {
+            Some(crate::xhttp::Sidecar::start(binary, s)?)
+        } else {
+            None
+        };
+        #[cfg(any(windows, feature = "test-support"))]
+        let bridge = xhttp.as_ref().map(crate::xhttp::Sidecar::outbound);
+        #[cfg(not(any(windows, feature = "test-support")))]
+        let bridge = None;
+        let mut cfg = config_internal(s, settings, rules, port, api_port, &secret, bridge)?;
         if uid.is_some() {
             cfg["inbounds"][1]["interface_name"] = json!("utun99");
             cfg["inbounds"][1]["dns_mode"] = json!("disabled");
@@ -454,6 +489,8 @@ impl CoreProcess {
             logs,
             #[cfg(windows)]
             _job: job,
+            #[cfg(any(windows, feature = "test-support"))]
+            xhttp,
         };
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(if cfg!(windows) { 15 } else { 3 });
@@ -484,6 +521,10 @@ impl CoreProcess {
         Err(crate::text("message_284").into())
     }
     pub fn alive(&mut self) -> bool {
+        #[cfg(any(windows, feature = "test-support"))]
+        if self.xhttp.as_mut().is_some_and(|child| !child.alive()) {
+            return false;
+        }
         matches!(self.child.try_wait(), Ok(None))
     }
     pub fn stop(&mut self) {
@@ -514,6 +555,10 @@ impl CoreProcess {
                     .map_err(|_| crate::text("helper_stop_unconfirmed"))?;
             }
             Err(_) => return Err(crate::text("helper_stop_unconfirmed").into()),
+        }
+        #[cfg(any(windows, feature = "test-support"))]
+        if let Some(xhttp) = self.xhttp.as_mut() {
+            xhttp.stop()?;
         }
         let _ = std::fs::remove_dir_all(&self.dir);
         Ok(())

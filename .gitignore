@@ -26,3 +26,5 @@ xcuserdata/
 
 # Local UI verification artifacts
 /output/playwright/
+/core/xray
+/core/xray.exe

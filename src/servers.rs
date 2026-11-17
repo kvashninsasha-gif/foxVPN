@@ -56,8 +56,18 @@ impl Server {
             }
         }
         let transport = params.get("type").cloned().unwrap_or("tcp".into());
-        if !["tcp", "ws", "grpc"].contains(&transport.as_str()) {
+        if !["tcp", "ws", "grpc", "xhttp"].contains(&transport.as_str()) {
             return Err(crate::text("message_226").into());
+        }
+        if transport == "xhttp" {
+            if params.get("mode").is_some_and(|v| {
+                !["auto", "packet-up", "stream-up", "stream-one"].contains(&v.as_str())
+            }) {
+                return Err("Неподдерживаемый режим XHTTP".into());
+            }
+            if params.contains_key("extra") {
+                return Err("Расширенные параметры XHTTP extra пока не поддерживаются".into());
+            }
         }
         let security = params.get("security").cloned().unwrap_or("none".into());
         if !["none", "tls", "reality"].contains(&security.as_str()) {

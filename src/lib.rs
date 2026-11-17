@@ -35,3 +35,6 @@ mod process_lifetime;
 pub mod windows_proxy;
 
 pub mod windows_service;
+
+#[cfg(any(windows, test, feature = "test-support"))]
+pub mod xhttp;
