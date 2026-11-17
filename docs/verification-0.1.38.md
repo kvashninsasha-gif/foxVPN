@@ -41,3 +41,7 @@ The final native Intel macOS startup/privilege-drop route workflow passed: [run 
 The first combined Windows build correctly stopped before installer packaging: a relative Xray output path was interpreted inside the extracted source directory, while the scanner looked in the runner workspace. The build script now resolves the work directory before changing directories. No unscanned resource was staged or published.
 
 Windows Python 3.12 also exposed a locale-specific decoding failure on UTF-8 Go advisory output. The Xray builder now explicitly reads/writes UTF-8 for reports and metadata; the audit is still mandatory before staging. Both earlier failures happened before packaging/signing, and no incomplete build was published.
+
+## Published release acceptance
+
+[v0.1.38](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.38) contains 16 immutable assets. All remote asset names, byte sizes and GitHub SHA256 digests matched the checked local files before and after publication. Windows and macOS original-key version-bound signatures passed real archive/cache tampering tests. The source archive and release tag reference 000c44a16daf38fe4feda090a2d68cc5c511a8e0; native Windows binary source c0c78d3 differs only by release-acceptance documentation. Both updater feeds and the README download buttons were advanced only after public artifact verification. The installed Mac app/connection was not replaced in this task.

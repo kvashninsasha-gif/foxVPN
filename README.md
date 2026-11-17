@@ -2,17 +2,19 @@
 
 VPN-клиент с русским интерфейсом, VLESS/Reality, тёмной темой и правилами маршрутизации.
 
-[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.37/foxVPN_0.1.37_x64-setup.exe)
-[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.37/foxVPN-0.1.37-macOS-arm64.zip)
+[![Скачать для Windows](docs/assets/download-windows.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.38/foxVPN_0.1.38_x64-setup.exe)
+[![Скачать для macOS](docs/assets/download-macos.svg)](https://github.com/kvashninsasha-gif/foxVPN/releases/download/v0.1.38/foxVPN-0.1.38-macOS-arm64.zip)
 
-**Последняя проверенная сборка: 0.1.37 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.37).
+**Последняя проверенная сборка: 0.1.38 · macOS и Windows · предварительный релиз.** [Все файлы, исходники и SHA256](https://github.com/kvashninsasha-gif/foxVPN/releases/tag/v0.1.38).
 
 | Платформа | Что доступно | Первый запуск |
 | --- | --- | --- |
 | Windows x64 | Локальный HTTP/SOCKS-прокси с автоматической настройкой браузеров после согласия и восстановлением прежних параметров. Системный VPN и Kill Switch ещё не реализованы | [Установка и проверка подключения](docs/windows-test-guide.md) |
 | macOS Apple Silicon | VPN всего Mac через сетевой компонент, локальный прокси и правила маршрутизации | Распакуйте ZIP, перенесите foxVPN.app в Applications; сетевой компонент устанавливается из настроек приложения |
 
-Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.34](docs/verification-0.1.34.md).
+Установщик Windows без Authenticode-подписи; Mac без Developer ID/нотарификации. Сервер VPN нужно добавить самостоятельно. Это ещё не полный MVP: [план готовности](docs/readiness-plan.md), [результаты проверки 0.1.38](docs/verification-0.1.38.md).
+
+В 0.1.38 исправлен обход прокси Chrome из-за прежних исключений Windows и добавлен стандартный VLESS + REALITY + XHTTP на Windows (auto, packet-up, stream-up, stream-one). Xray включён в установщик; правила маршрутизации остаются в foxVPN. Системный VPN macOS сохраняет прежние транспорты. [Проверки и ограничения](docs/verification-0.1.38.md).
 
 В 0.1.37 добавлены сохранение причин сбоя после отключения, обнаружение потери служебного канала и проверка системного маршрута. Диагностика различает локальный прокси, системный VPN и отказ отдельного проверочного сайта. [Проверки и ограничения](docs/verification-0.1.37.md).
 
