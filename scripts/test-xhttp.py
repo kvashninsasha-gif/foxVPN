@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline real XHTTP/REALITY fixture; no user profile or remote VPS."""
-import argparse,sys,hashlib,base64,http.server,json,os,queue,re,secrets,socket,ssl,subprocess,tempfile,threading,time
+import argparse,sys,hashlib,shutil,base64,http.server,json,os,queue,re,secrets,socket,ssl,subprocess,tempfile,threading,time
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--xray',type=Path,required=True);p.add_argument('--generator',type=Path,required=True);p.add_argument('--core',type=Path);p.add_argument('--report',type=Path,required=True);a=p.parse_args()
 UUID='11111111-1111-4111-8111-111111111111'
@@ -29,7 +29,12 @@ with tempfile.TemporaryDirectory(prefix='foxvpn-xhttp-') as temp:
  origin=http.server.ThreadingHTTPServer(('127.0.0.1',0),HTTP);origin_port=origin.server_port
  threading.Thread(target=origin.serve_forever,daemon=True).start()
  cert=root/'cert.pem';key=root/'key.pem'
- subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(cert),'-subj','/CN=fixture.invalid','-days','1'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
+ openssl=shutil.which('openssl')
+ if not openssl and sys.platform=='win32':
+  candidate=Path(os.environ.get('PROGRAMFILES','C:/Program Files'))/'Git/usr/bin/openssl.exe'
+  if candidate.is_file():openssl=str(candidate)
+ assert openssl,'OpenSSL fixture tool is required'
+ subprocess.run([openssl,'req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(cert),'-subj','/CN=fixture.invalid','-days','1'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
  context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_3;context.set_alpn_protocols(['h2']);context.load_cert_chain(cert,key)
  class TLSHTTP(HTTP):
   def setup(self):

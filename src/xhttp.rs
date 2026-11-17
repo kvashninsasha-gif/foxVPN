@@ -32,9 +32,28 @@ pub fn configuration(s: &Server, port: u16, password: &str) -> Result<Value, Str
     }
     Ok(
         json!({"log":{"loglevel":"error"},"inbounds":[{"tag":"fox-private","listen":"127.0.0.1","port":port,"protocol":"socks",
-        "settings":{"auth":"password","accounts":[{"user":"foxvpn","pass":password}],"udp":true}}],
+        "settings":{"auth":"password","ip":"127.0.0.1","accounts":[{"user":"foxvpn","pass":password}],"udp":true}}],
         "outbounds":[{"tag":"vpn","protocol":"vless","settings":{"vnext":[{"address":s.address,"port":s.port,"users":[{"id":s.uuid,"encryption":"none"}]}]},"streamSettings":stream}]}),
     )
+}
+
+pub fn verify_resource(core: &Path) -> Result<PathBuf, String> {
+    let binary = core.with_file_name(if cfg!(windows) { "xray.exe" } else { "xray" });
+    let metadata = std::fs::read(binary.with_file_name("xray-version.json"))
+        .map_err(|_| "В сборке отсутствует модуль XHTTP")?;
+    if metadata.len() > 32768 {
+        return Err("Некорректная версия модуля XHTTP".into());
+    }
+    let info: Value =
+        serde_json::from_slice(&metadata).map_err(|_| "Некорректная версия модуля XHTTP")?;
+    if info["version"] != "26.11.9" || info["vulnerability_scan"] != "zero-findings" {
+        return Err("Обновите проверенную сборку модуля XHTTP".into());
+    }
+    let bytes = std::fs::read(&binary).map_err(|_| "Модуль XHTTP отсутствует")?;
+    if info["binary_sha256"].as_str() != Some(&format!("{:x}", Sha256::digest(&bytes))) {
+        return Err("Целостность модуля XHTTP не подтверждена".into());
+    }
+    Ok(binary)
 }
 
 pub struct Sidecar {
@@ -53,18 +72,7 @@ impl Sidecar {
         matches!(self.child.try_wait(), Ok(None))
     }
     pub fn start(core: &Path, s: &Server) -> Result<Self, String> {
-        let binary = core.with_file_name(if cfg!(windows) { "xray.exe" } else { "xray" });
-        let metadata = std::fs::read(binary.with_file_name("xray-version.json"))
-            .map_err(|_| "В сборке отсутствует модуль XHTTP")?;
-        if metadata.len() > 32768 {
-            return Err("Некорректная версия модуля XHTTP".into());
-        }
-        let info: Value =
-            serde_json::from_slice(&metadata).map_err(|_| "Некорректная версия модуля XHTTP")?;
-        let bytes = std::fs::read(&binary).map_err(|_| "Модуль XHTTP отсутствует")?;
-        if info["binary_sha256"].as_str() != Some(&format!("{:x}", Sha256::digest(&bytes))) {
-            return Err("Целостность модуля XHTTP не подтверждена".into());
-        }
+        let binary = verify_resource(core)?;
         let reservation = std::net::TcpListener::bind("127.0.0.1:0")
             .map_err(|_| "Не удалось подготовить XHTTP")?;
         let port = reservation

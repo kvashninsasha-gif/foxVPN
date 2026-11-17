@@ -2,7 +2,10 @@
   "bundle": {
     "resources": {
       "../../../core/sing-box": "core/sing-box.exe",
-      "../../../core/version.json": "core/version.json"
+      "../../../core/version.json": "core/version.json",
+      "../../../core/xray": "core/xray.exe",
+      "../../../core/xray-version.json": "core/xray-version.json",
+      "../../../vendor/xray-LICENSE": "core/xray-LICENSE"
     },
     "targets": [
       "nsis"

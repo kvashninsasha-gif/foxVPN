@@ -27,6 +27,15 @@ if ai.get('installer_sha256')!=hashlib.sha256(installer.read_bytes()).hexdigest(
  raise SystemExit('AI proof does not match this installer/pinned model')
 if len(ai.get('inference',[]))!=6 or not all(ai.get(k) for k in ('corrupted_model_rejected','unknown_fields_rejected','oversized_input_rejected','parent_death_cleanup')):
  raise SystemExit('Incomplete installed local AI worker proof')
+xhttp_path=installer.parent/'windows-xhttp-startup.json'
+if not xhttp_path.is_file():raise SystemExit('Installed XHTTP proof is required before signing')
+xhttp=json.loads(xhttp_path.read_text(encoding='utf-8-sig'))
+if (xhttp.get('installer_sha256')!=hashlib.sha256(installer.read_bytes()).hexdigest()
+    or xhttp.get('engine_version')!=version or xhttp.get('installer_version')!=version
+    or not xhttp.get('passed') or not xhttp.get('through_engine')
+    or len(xhttp.get('cases',[]))!=5 or not all(c.get('passed') for c in xhttp['cases'])
+    or not xhttp.get('xray_sha256') or not xhttp.get('core_sha256')):
+ raise SystemExit('Incomplete or mismatched installed XHTTP transport proof')
 key=Path.home()/'.config/foxvpn-release/updater.key'
 if not key.is_file() or not Path(str(key)+'.pub').is_file() or Path(str(key)+'.pub').read_text().strip()!=config['plugins']['updater']['pubkey']:
  raise SystemExit('Restore the original signing key; never replace it')

@@ -148,7 +148,24 @@ pub fn verify_core(state: &State) -> Result<(), String> {
         &state.binary,
         &metadata,
         &smart_vpn_engine::core_integrity::platform(),
-    )
+    )?;
+    #[cfg(windows)]
+    {
+        let xhttp = {
+            let p = state
+                .profile
+                .lock()
+                .map_err(|_| "Не удалось прочитать настройки")?;
+            p.servers
+                .iter()
+                .find(|server| Some(&server.id) == p.selected.as_ref())
+                .is_some_and(|server| server.transport == "xhttp")
+        };
+        if xhttp {
+            smart_vpn_engine::xhttp::verify_resource(&state.binary)?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

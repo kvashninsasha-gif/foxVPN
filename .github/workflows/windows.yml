@@ -54,6 +54,8 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - name: Build and audit pinned Windows core
         run: python scripts/build-core.py --platform windows-amd64 --work-dir target/core-source --scan
+      - name: Build and audit pinned XHTTP transport
+        run: python scripts/build-xray.py --platform windows-amd64 --work-dir target/xray-source
       - name: Rust tests with real local VLESS and core schema checks
         run: cargo test --locked --workspace
         env:
@@ -75,7 +77,7 @@ jobs:
           FOXVPN_TEST_ALLOW_SYSTEM_PROXY: "1"
           SMARTVPN_TEST_CORE: ${{ github.workspace }}/core/sing-box.exe
       - name: Build public startup fixture generator
-        run: cargo build --locked --release --example startup-fixtures
+        run: cargo build --locked --release --features test-support --example startup-fixtures --example xhttp-fixtures
       - name: Frontend dependencies
         run: npm ci
         working-directory: apps/desktop
@@ -116,6 +118,8 @@ jobs:
             target/release/bundle/nsis/SHA256SUMS.txt
             target/release/bundle/nsis/windows-core-startup.json
             target/release/bundle/nsis/windows-local-ai.json
+            target/release/bundle/nsis/windows-xhttp-startup.json
+            target/xray-source/advisory-assessment.json
 
       - name: Preserve exact Go scan and graph on failure
         if: failure()
