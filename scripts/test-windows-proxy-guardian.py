@@ -3,6 +3,8 @@
 import ctypes as c
 from ctypes import wintypes as w
 import json
+import http.server
+import uuid
 import os
 from pathlib import Path
 import queue
@@ -56,18 +58,54 @@ def write(config):
 
 exe = Path(sys.argv[1]).resolve()
 assert exe.is_file()
-before = read()
+original = read()
+before = (1, original[1], "*;*.com", original[3])
+# Seed a wildcard only inside the restoration guard below.
+def managed_bypass():
+    return "localhost;127.*;[::1]"
+
+def chrome_uses_system_proxy(temp):
+    chrome = next((Path(base)/"Google/Chrome/Application/chrome.exe"
+        for base in (os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", ""))
+        if (Path(base)/"Google/Chrome/Application/chrome.exe").is_file()), None)
+    assert chrome, "Chrome is required for the Windows browser regression"
+    token = "foxvpn-browser-" + uuid.uuid4().hex
+    hits = []
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            ok = self.path.startswith("http://foxvpn-proxy-test.invalid/")
+            if ok: hits.append(self.path)
+            body = ("<html><body>"+token+"</body></html>").encode() if ok else b"unrelated"
+            self.send_response(200 if ok else 502)
+            self.send_header("Content-Length", str(len(body))); self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *_): pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 2080), Proxy)
+    thread = threading.Thread(target=server.serve_forever, daemon=True);thread.start()
+    try:
+        result = subprocess.run([str(chrome), "--headless=new", "--disable-gpu", "--no-first-run",
+            "--no-default-browser-check", "--disable-background-networking",
+            "--disable-features=HttpsUpgrades", "--user-data-dir="+str(Path(temp)/"chrome"),
+            "--dump-dom", "http://foxvpn-proxy-test.invalid/probe"],
+            capture_output=True, text=True, timeout=35)
+        assert token in result.stdout and hits, "Chrome did not use the managed Windows proxy"
+        print("Chrome used Windows proxy despite inherited wildcard bypass", flush=True)
+    finally:
+        server.shutdown();server.server_close();thread.join(timeout=3)
+
 with tempfile.TemporaryDirectory(prefix="foxvpn-release-guardian-") as temp:
     env = dict(os.environ, APPDATA=temp)
     process = subprocess.Popen([str(exe), "--foxvpn-proxy-guardian"], env=env,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW)
     try:
+        write(before)
         process.stdin.write((json.dumps(2080) + "\n").encode()); process.stdin.flush()
         reply = queue.Queue()
         threading.Thread(target=lambda: reply.put(process.stdout.readline()), daemon=True).start()
         assert reply.get(timeout=15).strip() == b"FOXVPN_PROXY_READY"
-        assert read() == (3, "127.0.0.1:2080", before[2], before[3])
+        assert read() == (3, "127.0.0.1:2080", managed_bypass(), before[3])
+        chrome_uses_system_proxy(temp)
         process.stdin.close()
         assert process.wait(timeout=15) == 0
         expected = before
@@ -103,5 +141,5 @@ with tempfile.TemporaryDirectory(prefix="foxvpn-release-guardian-") as temp:
     finally:
         if process.poll() is None:
             process.kill(); process.wait(timeout=10)
-        write(before)
+        write(original)
 print("Release EXE proxy restore and recovery before corrupt profile verified")

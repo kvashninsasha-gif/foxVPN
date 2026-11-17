@@ -349,6 +349,20 @@ mod tests {
         std::fs::remove_dir(p.parent().unwrap()).unwrap();
     }
     #[test]
+    fn wildcard_bypass_is_replaced_only_for_the_lease_and_fully_restored() {
+        let mut original = before();
+        original.bypass = "*;*.com;example.org".into();
+        let f = Fake(RefCell::new(original.clone()));
+        let p = fixture();
+        acquire(&f, &p, 2080).unwrap();
+        let active =
+            smart_vpn_engine::windows_proxy::Status::from_configuration(&f.read().unwrap(), 2080);
+        assert!(active.matches && !active.bypass_conflict);
+        recover(&f, &p).unwrap();
+        assert_eq!(f.read().unwrap(), original);
+        std::fs::remove_dir(p.parent().unwrap()).unwrap();
+    }
+    #[test]
     fn preserves_external_proxy_changes_including_only_bypass_change() {
         let f = Fake(RefCell::new(before()));
         let p = fixture();

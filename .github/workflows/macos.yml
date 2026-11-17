@@ -32,7 +32,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache: false
       - name: Verify fail-closed Go advisory policy
         run: python scripts/test-go-advisories.py

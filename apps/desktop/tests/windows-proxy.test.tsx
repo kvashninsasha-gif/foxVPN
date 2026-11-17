@@ -31,3 +31,12 @@ it('active PAC or autodetection prevents a false ready badge',async()=>{
  render(<WindowsProxySetup connected port={2080}/>);await screen.findByText('Включены автоматические параметры Windows');
  expect(screen.queryByText('Прокси Windows настроен')).toBeNull();expect(ipc.invoke.mock.calls.every(([name])=>name==='windows_proxy_status')).toBe(true);
 });
+
+it('never shows ready when Windows exceptions bypass the local proxy',async()=>{
+ ipc.invoke.mockResolvedValue({supported:true,enabled:true,matches:true,bypass_conflict:true});
+ render(<WindowsProxySetup connected automatic port={2080}/>);
+ await screen.findByText('Исключения Windows обходят foxVPN');
+ expect(screen.queryByText('Прокси Windows настроен')).toBeNull();
+ expect(screen.getByText(/Исключения прокси Windows могут отправлять сайты напрямую/)).toBeTruthy();
+ expect(ipc.invoke.mock.calls.every(([name])=>name==='windows_proxy_status')).toBe(true);
+});

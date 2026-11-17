@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
-"""Fail-closed govulncheck JSON-stream gate; exact dated OpenPGP wildcard review.
-
-The scanner's binary JSON exit code alone does not enforce findings. Only an
-unchanged reviewed wildcard advisory with a complete paired production package
-graph can be assessed out; concrete symbols and every other finding fail.
-"""
+"""Fail-closed Go binary advisory gate. Every finding blocks the build.
+No historical OpenPGP exception applies to the upgraded dependency graph."""
 import argparse
 import datetime
 import hashlib
@@ -15,8 +11,8 @@ import re
 ROOT_PACKAGE = "github.com/sagernet/sing-box/cmd/sing-box"
 ROOT_MODULE = "github.com/sagernet/sing-box"
 CRYPTO_MODULE = "golang.org/x/crypto"
-CRYPTO_VERSION = "v0.58.0"
-EXPECTED_GO = "go1.26.10"
+CRYPTO_VERSION = "v0.59.0"
+EXPECTED_GO = "go1.26.11"
 REVIEW_ID = "GO-2026-5932"
 REVIEW_MODIFIED = "2026-07-07T22:15:29Z"
 REVIEWED = datetime.date(2026, 10, 29)
@@ -206,15 +202,6 @@ def assess(data, graph_data=None, today=None):
         counts = levels.setdefault(finding["osv"], {"module": 0, "package": 0, "symbol": 0})
         counts[level] += 1
     today = today or datetime.datetime.now(datetime.timezone.utc).date()
-    if REVIEW_ID in results:
-        matches = [finding for finding in report["findings"] if finding["osv"] == REVIEW_ID]
-        if (records is not None and REVIEWED <= today <= EXPIRES and report["SBOM"]["go_version"] == EXPECTED_GO
-                and report["modules"].get(CRYPTO_MODULE) == CRYPTO_VERSION
-                and wildcard_only(report["advisories"][REVIEW_ID], matches)
-                and not any(is_openpgp(path) for path in records)):
-            reviewed[REVIEW_ID] = {"summary": results.pop(REVIEW_ID), "reviewed": REVIEWED.isoformat(), "expires": EXPIRES.isoformat(),
-                                   "assessment": "Only reviewed pseudo-wildcard matches; OpenPGP absent from complete paired production graph",
-                                   "source": "https://pkg.go.dev/vuln/" + REVIEW_ID}
     return {"passed": not results, "reviewed_findings": reviewed, "symbol_advisories": results,
             "finding_count": len(report["findings"]), "finding_levels": levels, "scanner": report["config"],
             "report_sha256": hashlib.sha256(data.encode()).hexdigest(),

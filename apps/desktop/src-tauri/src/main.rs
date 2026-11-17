@@ -271,6 +271,8 @@ fn runtime_impl(
     };
     // Never hold the core mutex while waiting for helper IPC. A late poll
     // must also not overwrite a newer connect/stop or configuration action.
+    #[cfg(windows)]
+    let windows_auto = s.profile.lock().unwrap().settings.windows_proxy_auto == Some(true);
     let operation = s.gate.try_lock().ok();
     let mut core = s.core.lock().unwrap();
     let mut connection_error = s
@@ -344,6 +346,21 @@ fn runtime_impl(
             }
         }
     }
+    #[cfg(windows)]
+    let windows_proxy_problem = if operation.is_some()
+        && s.wanted.current(ticket)
+        && !s.wanted.pending(ticket)
+        && core.is_some()
+        && windows_auto
+    {
+        match smart_vpn_engine::windows_proxy::read(configured_port) {
+            Ok(status) if status.matches => None,
+            Ok(_) => Some("Прокси Windows изменён или содержит исключения обхода. Нажмите «Проверить и настроить»".to_string()),
+            Err(error) => Some(error),
+        }
+    } else {
+        None
+    };
     let result = RuntimeSnapshot {
         status: s.status.lock().unwrap().clone(),
         proxy_port: core.as_ref().map(|c| c.proxy_port),
@@ -360,6 +377,15 @@ fn runtime_impl(
         }),
         connection_error,
         active_server_id,
+    };
+    #[cfg(windows)]
+    let result = {
+        let mut result = result;
+        if let Some(error) = windows_proxy_problem {
+            result.status = "unknown".into();
+            result.connection_error = Some(error);
+        }
+        result
     };
     drop(core);
     drop(operation);

@@ -49,11 +49,10 @@ class GoAdvisoryTests(unittest.TestCase):
         return gate.assess(stream(events if events is not None else self.events),
                            stream(graph if graph is not None else self.graph), date or self.date)
 
-    def test_only_exact_wildcard_and_complete_graph_has_dated_visible_assessment(self):
+    def test_historical_wildcard_exception_no_longer_allows_a_finding(self):
         result = self.assess()
-        self.assertTrue(result["passed"])
-        self.assertIn(gate.REVIEW_ID, result["reviewed_findings"])
-        self.assertEqual(result["reviewed_findings"][gate.REVIEW_ID]["expires"], "2026-12-31")
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reviewed_findings"], {})
         self.assertEqual(len(result["report_sha256"]), 64)
         self.assertEqual(len(result["production_graph_sha256"]), 64)
         self.assertEqual(result["finding_levels"][gate.REVIEW_ID], {"module": 0, "package": 0, "symbol": 1})
@@ -157,7 +156,7 @@ class GoAdvisoryTests(unittest.TestCase):
         self.assertFalse(self.assess(events=events)["passed"])
 
     def test_module_version_mismatch_fails_closed(self):
-        for version in ["v0.56.0", "v0.57.0", "v0.59.0"]:
+        for version in ["v0.56.0", "v0.57.0", "v0.58.0"]:
             graph = copy.deepcopy(self.graph)
             graph[2]["Module"]["Version"] = version
             with self.assertRaises(ValueError):
@@ -188,7 +187,7 @@ class GoAdvisoryTests(unittest.TestCase):
     def test_identical_repeated_osv_definitions_do_not_drop_findings(self):
         result = self.assess(events=[*self.events, copy.deepcopy(self.events[2])])
         self.assertEqual(result["finding_count"], 1)
-        self.assertIn(gate.REVIEW_ID, result["reviewed_findings"])
+        self.assertEqual(result["reviewed_findings"], {})
 
     def test_clean_complete_binary_report_passes_without_ignoring_definitions(self):
         result = self.assess(events=self.events[:-1])

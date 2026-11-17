@@ -9,6 +9,7 @@ pub struct Status {
     pub script_configured: bool,
     pub script_active: bool,
     pub auto_detect: bool,
+    pub bypass_conflict: bool,
 }
 
 impl Status {
@@ -16,16 +17,20 @@ impl Status {
         let enabled = config.flags & 2 != 0;
         let script_active = config.flags & 4 != 0;
         let auto_detect = config.flags & 8 != 0;
+        let bypass_conflict =
+            enabled && matches_server(&config.server, port) && bypass_conflicts(&config.bypass);
         Self {
             supported: true,
             enabled,
             matches: enabled
                 && matches_server(&config.server, port)
                 && !script_active
-                && !auto_detect,
+                && !auto_detect
+                && !bypass_conflict,
             script_configured: !config.auto_url.is_empty(),
             script_active,
             auto_detect,
+            bypass_conflict,
         }
     }
 }
@@ -109,6 +114,7 @@ fn read_from(subkey: &str, port: u16) -> Result<Status, String> {
         script_configured,
         script_active: false,
         auto_detect: false,
+        bypass_conflict: false,
     })
 }
 
@@ -121,6 +127,7 @@ pub fn read(_: u16) -> Result<Status, String> {
         script_configured: false,
         script_active: false,
         auto_detect: false,
+        bypass_conflict: false,
     })
 }
 
@@ -244,11 +251,29 @@ pub struct Configuration {
     pub bypass: String,
     pub auto_url: String,
 }
+/// Keep only loopback outside the proxy. LAN/site decisions belong to the
+/// core, so an explicit user rule cannot be overridden by Windows bypasses.
+pub fn managed_bypass() -> String {
+    "localhost;127.*;[::1]".into()
+}
+fn bypass_conflicts(value: &str) -> bool {
+    let allowed = managed_bypass();
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|entry| {
+            !allowed
+                .split(';')
+                .any(|safe| safe.eq_ignore_ascii_case(entry))
+        })
+}
 impl Configuration {
     pub fn managed(&self, port: u16) -> Self {
         Self {
             flags: 3,
             server: format!("127.0.0.1:{port}"),
+            bypass: managed_bypass(),
             ..self.clone()
         }
     }
@@ -397,6 +422,26 @@ pub fn set_configuration(config: &Configuration) -> Result<(), String> {
 #[cfg(test)]
 mod effective_tests {
     use super::*;
+    #[test]
+    fn external_bypass_cannot_silently_override_vpn_routes() {
+        let before = Configuration {
+            flags: 3,
+            server: "old:80".into(),
+            bypass: "*;*.com;example.org".into(),
+            auto_url: String::new(),
+        };
+        let mut managed = before.managed(2080);
+        assert!(Status::from_configuration(&managed, 2080).matches);
+        assert!(managed.bypass.contains("127.*"));
+        assert!(!managed.bypass.contains("192.168.*"));
+        for exception in ["*", "*.com", "example.org", "https://example.org", "192.*"] {
+            managed.bypass = exception.into();
+            let status = Status::from_configuration(&managed, 2080);
+            assert!(status.bypass_conflict);
+            assert!(!status.matches);
+        }
+        assert_eq!(before.bypass, "*;*.com;example.org");
+    }
     #[test]
     fn active_scripts_and_detection_make_manual_proxy_ambiguous() {
         let mut config = Configuration {
