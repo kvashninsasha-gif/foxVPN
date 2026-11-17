@@ -40,8 +40,20 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - name: Build and audit pinned core for runner architecture
         run: python3 scripts/build-core.py --work-dir target/core-source --scan
-      - name: Engine tests with real core
-        run: cargo test --locked -p smart-vpn-engine
+      - name: Engine tests with signed native fixtures and real core
+        run: |
+          cargo test --locked -p smart-vpn-engine --no-run --message-format=json > target/engine-test-build.json
+          python3 - <<'PYTEST'
+          import json,subprocess
+          from pathlib import Path
+          rows=[json.loads(line) for line in Path('target/engine-test-build.json').read_text().splitlines() if line.startswith('{')]
+          executables=sorted({row['executable'] for row in rows if row.get('reason')=='compiler-artifact' and row.get('executable') and row.get('profile',{}).get('test')})
+          assert executables, 'No engine tests were compiled'
+          for executable in executables:
+              subprocess.run(['codesign','--force','--sign','-','--options','runtime',executable],check=True)
+              subprocess.run(['codesign','--verify','--strict',executable],check=True)
+              subprocess.run([executable],check=True)
+          PYTEST
         env:
           SMARTVPN_TEST_CORE: ${{ github.workspace }}/core/sing-box
       - name: Build production fixture generator
