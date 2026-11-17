@@ -11,12 +11,12 @@ export function Updates({ready,showSettings,showOverview=false,blocked,onRefresh
  const [info,setInfo]=useState<UpdateInfo|null>(null),[offer,setOffer]=useState<UpdateOffer|null>(null),[visible,setVisible]=useState(false),[phase,setPhase]=useState('idle'),[progress,setProgress]=useState<Progress|null>(null),[message,setMessage]=useState(''),[error,setError]=useState(''),[helperLater,setHelperLater]=useState(false),[helperBusy,setHelperBusy]=useState(false),[cancelling,setCancelling]=useState(false),[helperRetry,setHelperRetry]=useState(0),[helperWaiting,setHelperWaiting]=useState(false),[helperPoll,setHelperPoll]=useState(0);
  const inFlight=useRef(false),mounted=useRef(true),loadId=useRef(0),bootstrap=useRef<Promise<UpdateInfo>|null>(null);
  const [initializing,setInitializing]=useState(false),[rollbackApproved,setRollbackApproved]=useState(false);
- useEffect(()=>setRollbackApproved(false),[offer?.version]);
+ const offeredVersion=useRef<string|null>(null);
  const installing=['downloading','verifying','component','installing','restarting'].includes(phase);
  const dialogOpen=!!info?.supported&&((visible&&!!offer&&(!blocked||installing))||(!!info?.helper_required&&!helperLater&&!visible&&!blocked));
  async function check(manual:boolean,settings?:UpdateInfo){
   if(inFlight.current)return;inFlight.current=true;setPhase('checking');if(manual){setError('');setMessage('Проверяем GitHub…')}
-  try{const value=await invoke<UpdateOffer|null>('check_app_update',{manual});if(!mounted.current)return;setOffer(value);if(value&&(manual||value.version!==(settings??info)?.skipped_version)){setError('');setVisible(true);setMessage('')}else if(manual)setMessage('У вас актуальная версия foxVPN.')}
+  try{const value=await invoke<UpdateOffer|null>('check_app_update',{manual});if(!mounted.current)return;if((value?.version??null)!==offeredVersion.current){offeredVersion.current=value?.version??null;setRollbackApproved(false)}setOffer(value);if(value&&(manual||value.version!==(settings??info)?.skipped_version)){setError('');setVisible(true);setMessage('')}else if(manual)setMessage('У вас актуальная версия foxVPN.')}
   catch(e){if(mounted.current){setError(String(e));if(manual)setMessage('')}}finally{inFlight.current=false;if(mounted.current)setPhase('idle')}
  }
  async function initialize(manual=false){
