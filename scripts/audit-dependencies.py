@@ -64,8 +64,10 @@ def tree_packages(text):
 
 
 def assess(findings, baseline, trees, today):
-    if baseline.get("schema") != 1 or baseline.get("npm") != [] or set(trees) != set(TARGETS):
+    if baseline.get("schema") != 1 or not isinstance(baseline.get("npm"), list) or set(trees) != set(TARGETS):
         raise ValueError("Wrong assessment schema, npm baseline or target coverage")
+    if any(not isinstance(item, dict) or item.get("advisory")!="GHSA-fc5q-39xc-vjpf" or item.get("source")!="https://github.com/advisories/GHSA-fc5q-39xc-vjpf" for item in baseline["npm"]):
+        raise ValueError("Blanket or unknown npm review")
     indexed = {}
     for item in baseline["rust"]:
         key = tuple(item[field] for field in ("advisory", "package", "version", "kind"))
@@ -108,6 +110,52 @@ def npm_findings(raw):
     return [{"package": name, "severity": info["severity"], "via": info["via"],
              "nodes": info["nodes"], "range": info["range"], "fix_available": info["fixAvailable"],
              "status": "unresolved"} for name, info in sorted(vulns.items())]
+
+
+def assess_npm(raw, baseline, lock, today=None):
+    today = today or datetime.datetime.now(datetime.timezone.utc).date()
+    findings = npm_findings(raw)
+    entries=baseline.get("npm", [])
+    reviews = {item["package"]: item for item in entries}
+    if len(reviews)!=len(entries) or any(item.get("source")!="https://github.com/advisories/"+item.get("advisory", "") for item in entries):
+        raise ValueError("Duplicate or non-primary npm assessment")
+    vulnerabilities = raw["vulnerabilities"]
+    def sources(name, seen):
+        if name in seen or name not in vulnerabilities:
+            return set()
+        seen = seen | {name}
+        result = set()
+        for via in vulnerabilities[name]["via"]:
+            if isinstance(via, str):
+                child = sources(via, seen)
+                if not child: return set()
+                result |= child
+            elif isinstance(via, dict):
+                result.add(via.get("url", ""))
+            else: return set()
+        return result
+    direct_records = sorted({json.dumps(via,sort_keys=True,separators=(",", ":")) for value in vulnerabilities.values() for via in value["via"] if isinstance(via,dict)})
+    advisory_sha256 = hashlib.sha256(json.dumps(direct_records,separators=(",", ":")).encode()).hexdigest()
+    used = set()
+    for finding in findings:
+        name = finding["package"]
+        review = reviews.get(name)
+        if not review: continue
+        reviewed = datetime.date.fromisoformat(review["reviewed"])
+        expires = datetime.date.fromisoformat(review["expires"])
+        nodes = finding["nodes"]
+        packages = lock.get("packages", {})
+        scoped = bool(nodes) and all(node in packages and packages[node].get("dev") is True
+            and packages[node].get("version") == review["version"] for node in nodes)
+        exact = sources(name, set()) == {review["source"]}
+        if (review.get("advisory") == "GHSA-fc5q-39xc-vjpf" and review.get("rationale")
+                and reviewed <= today <= expires and (expires-reviewed).days <= 14 and scoped and exact
+                and review.get("advisory_sha256") == advisory_sha256):
+            finding["status"] = "reviewed_build_only"
+            finding["assessment"] = review
+            used.add(name)
+    unused = [{"npm_package":name} for name in reviews if name not in {f["package"] for f in findings}]
+    return findings, unused
 
 
 def windows_npm_command(npm_binary, node_binary, arguments):
@@ -179,13 +227,14 @@ def main():
         summary["rust"], summary["unused_assessments"] = assess(findings, baseline, trees, datetime.datetime.now(datetime.timezone.utc).date())
         raw_npm, npm_code = execute(["npm", "audit", "--json"], root / "apps/desktop", output / "npm.json", (0, 1))
         npm = json.loads(raw_npm)
-        summary["npm"] = npm_findings(npm)
+        summary["npm"], unused_npm = assess_npm(npm, baseline, json.loads((root / "apps/desktop/package-lock.json").read_text()))
+        summary["unused_assessments"].extend(unused_npm)
         summary["npm_metadata"] = npm["metadata"]
         if npm_code == 1 and not summary["npm"]:
             raise ValueError("npm audit failed without findings")
         if before != {str(path.relative_to(root)): sha256(path) for path in tracked}:
             raise ValueError("Lockfile or manifest changed during audit")
-        summary["passed"] = not summary["npm"] and not any(item["status"] == "unresolved" for item in summary["rust"]) and not summary["unused_assessments"]
+        summary["passed"] = not any(item["status"] == "unresolved" for item in summary["npm"]) and not any(item["status"] == "unresolved" for item in summary["rust"]) and not summary["unused_assessments"]
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         summary["error"] = str(error)
     summary["evidence_sha256"] = {path.name: sha256(path) for path in evidence_paths if path.is_file()}

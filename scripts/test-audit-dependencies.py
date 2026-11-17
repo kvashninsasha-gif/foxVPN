@@ -16,7 +16,7 @@ spec.loader.exec_module(gate)
 
 class AuditPolicyTests(unittest.TestCase):
     def setUp(self):
-        self.today = datetime.date(2026, 10, 11)
+        self.today = datetime.date(2026, 11, 17)
         self.baseline = json.loads((Path(__file__).parents[1] / "docs/dependency-audit-baseline.json").read_text())
         self.findings = [{field: item[field] for field in ("advisory", "package", "version", "kind")} for item in self.baseline["rust"]]
         self.trees = {target: {("serde", "1.0.229")} for target in gate.TARGETS}
@@ -26,7 +26,7 @@ class AuditPolicyTests(unittest.TestCase):
 
     def test_known_absent_platform_findings_remain_visible(self):
         results, unused = self.evaluate()
-        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results), len(self.baseline["rust"]))
         self.assertFalse(unused)
         self.assertTrue(all(item["status"] == "reviewed_exception" for item in results))
 
@@ -43,7 +43,7 @@ class AuditPolicyTests(unittest.TestCase):
             self.assertEqual(results[0]["status"], "unresolved")
 
     def test_expired_and_excessive_or_future_reviews_fail(self):
-        for field, changed in [("expires", "2026-10-10"), ("expires", "2027-12-31"), ("reviewed", "2026-10-12")]:
+        for field, changed in [("expires", "2026-10-10"), ("expires", "2027-12-31"), ("reviewed", "2026-11-18")]:
             baseline = json.loads(json.dumps(self.baseline))
             baseline["rust"][0][field] = changed
             with self.assertRaises(ValueError):
@@ -60,7 +60,7 @@ class AuditPolicyTests(unittest.TestCase):
 
     def test_removed_findings_need_baseline_cleanup(self):
         _, unused = gate.assess([], self.baseline, self.trees, self.today)
-        self.assertEqual(len(unused), 2)
+        self.assertEqual(len(unused), len(self.baseline["rust"]))
 
     def test_npm_new_advisory_is_unresolved(self):
         raw = {"auditReportVersion": 2, "metadata": {"vulnerabilities": {"total": 1}},
@@ -126,6 +126,32 @@ class AuditPolicyTests(unittest.TestCase):
             self.assertFalse((output / "npm.json").exists())
             self.assertNotIn("operator-note.txt", summary["evidence_sha256"])
             self.assertTrue((output / "operator-note.txt").exists())
+
+class BuildOnlyNpmTests(unittest.TestCase):
+    def fixture(self):
+        raw={"auditReportVersion":2,"metadata":{"vulnerabilities":{"total":1}},"vulnerabilities":{"picomatch":{"severity":"high","via":[{"url":"https://github.com/advisories/GHSA-fc5q-39xc-vjpf"}],"nodes":["node_modules/picomatch"],"range":"<=4.0.7","fixAvailable":False}}}
+        review={"advisory":"GHSA-fc5q-39xc-vjpf","package":"picomatch","version":"4.0.7","reviewed":"2026-11-17","expires":"2026-11-24","source":"https://github.com/advisories/GHSA-fc5q-39xc-vjpf","rationale":"Test exact dev-only scope"}
+        import hashlib
+        records=[json.dumps(raw["vulnerabilities"]["picomatch"]["via"][0],sort_keys=True,separators=(",", ":"))]
+        review["advisory_sha256"]=hashlib.sha256(json.dumps(records,separators=(",", ":")).encode()).hexdigest()
+        return raw,{"npm":[review]},{"packages":{"node_modules/picomatch":{"version":"4.0.7","dev":True}}}
+    def test_review_keeps_finding_visible(self):
+        raw,base,lock=self.fixture();results,unused=gate.assess_npm(raw,base,lock,datetime.date(2026,11,17))
+        self.assertFalse(unused);self.assertEqual(results[0]["status"],"reviewed_build_only");self.assertIn("assessment",results[0])
+    def test_production_changed_version_new_advisory_expiry_and_missing_node_block(self):
+        for kind in ["production","version","advisory","expired","missing","future"]:
+            raw,base,lock=self.fixture();today=datetime.date(2026,11,17)
+            if kind=="production":lock["packages"]["node_modules/picomatch"]["dev"]=False
+            if kind=="version":lock["packages"]["node_modules/picomatch"]["version"]="4.0.8"
+            if kind=="advisory":raw["vulnerabilities"]["picomatch"]["via"].append({"url":"https://github.com/advisories/NEW"})
+            if kind=="expired":today=datetime.date(2026,11,25)
+            if kind=="future":today=datetime.date(2026,11,16)
+            if kind=="missing":lock["packages"]={}
+            results,_=gate.assess_npm(raw,base,lock,today);self.assertEqual(results[0]["status"],"unresolved",kind)
+    def test_stale_review_needs_removal(self):
+        raw,base,lock=self.fixture();raw["vulnerabilities"]={};raw["metadata"]["vulnerabilities"]["total"]=0
+        _,unused=gate.assess_npm(raw,base,lock,datetime.date(2026,11,17));self.assertTrue(unused)
+
 
 if __name__ == "__main__":
     unittest.main()

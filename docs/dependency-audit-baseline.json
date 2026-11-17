@@ -1,6 +1,57 @@
 {
   "schema": 1,
-  "npm": [],
+  "npm": [
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "version": "4.0.7",
+      "reviewed": "2026-11-17",
+      "expires": "2026-11-24",
+      "source": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+      "rationale": "Temporary build-tool-only ReDoS review: no upstream patched version as of 2026-11-17. These exact lockfile nodes must all be dev-only; no affected Node package is shipped in the static Tauri frontend or core resources. Build and test inputs are the reviewed repository, not user routes or imported VPN links. Every advisory chain must resolve only to this advisory. New advisories, production nodes, versions or expiry fail closed. The finding remains visible; remove this review when a fix is available.",
+      "advisory_sha256": "87678d201a884427c88b5754435662e37b715b2953a3156236fe893dc9f4bce5"
+    },
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "fdir",
+      "version": "6.5.0",
+      "reviewed": "2026-11-17",
+      "expires": "2026-11-24",
+      "source": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+      "rationale": "Temporary build-tool-only ReDoS review: no upstream patched version as of 2026-11-17. These exact lockfile nodes must all be dev-only; no affected Node package is shipped in the static Tauri frontend or core resources. Build and test inputs are the reviewed repository, not user routes or imported VPN links. Every advisory chain must resolve only to this advisory. New advisories, production nodes, versions or expiry fail closed. The finding remains visible; remove this review when a fix is available.",
+      "advisory_sha256": "87678d201a884427c88b5754435662e37b715b2953a3156236fe893dc9f4bce5"
+    },
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "tinyglobby",
+      "version": "0.2.17",
+      "reviewed": "2026-11-17",
+      "expires": "2026-11-24",
+      "source": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+      "rationale": "Temporary build-tool-only ReDoS review: no upstream patched version as of 2026-11-17. These exact lockfile nodes must all be dev-only; no affected Node package is shipped in the static Tauri frontend or core resources. Build and test inputs are the reviewed repository, not user routes or imported VPN links. Every advisory chain must resolve only to this advisory. New advisories, production nodes, versions or expiry fail closed. The finding remains visible; remove this review when a fix is available.",
+      "advisory_sha256": "87678d201a884427c88b5754435662e37b715b2953a3156236fe893dc9f4bce5"
+    },
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "vite",
+      "version": "7.3.7",
+      "reviewed": "2026-11-17",
+      "expires": "2026-11-24",
+      "source": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+      "rationale": "Temporary build-tool-only ReDoS review: no upstream patched version as of 2026-11-17. These exact lockfile nodes must all be dev-only; no affected Node package is shipped in the static Tauri frontend or core resources. Build and test inputs are the reviewed repository, not user routes or imported VPN links. Every advisory chain must resolve only to this advisory. New advisories, production nodes, versions or expiry fail closed. The finding remains visible; remove this review when a fix is available.",
+      "advisory_sha256": "87678d201a884427c88b5754435662e37b715b2953a3156236fe893dc9f4bce5"
+    },
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "vitest",
+      "version": "5.0.3",
+      "reviewed": "2026-11-17",
+      "expires": "2026-11-24",
+      "source": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+      "rationale": "Temporary build-tool-only ReDoS review: no upstream patched version as of 2026-11-17. These exact lockfile nodes must all be dev-only; no affected Node package is shipped in the static Tauri frontend or core resources. Build and test inputs are the reviewed repository, not user routes or imported VPN links. Every advisory chain must resolve only to this advisory. New advisories, production nodes, versions or expiry fail closed. The finding remains visible; remove this review when a fix is available.",
+      "advisory_sha256": "87678d201a884427c88b5754435662e37b715b2953a3156236fe893dc9f4bce5"
+    }
+  ],
   "rust": [
     {
       "advisory": "RUSTSEC-2024-0429",
@@ -23,6 +74,17 @@
       "expires": "2026-12-31",
       "source": "https://rustsec.org/advisories/RUSTSEC-2024-0370.html",
       "rationale": "The upstream maintainer is inactive and there is no patched version; this is maintenance debt, not an all-clear. This exact procedural macro is only reached through Linux GTK-derived build dependencies and is absent from Mac arm64, Mac Intel and Windows x64 production/build trees. Every audit proves absence, including build dependencies. A future reachable package/new advisory/version must be reviewed separately; a Linux release must revisit or migrate this dependency."
+    },
+    {
+      "advisory": "RUSTSEC-2026-0543",
+      "package": "chrono",
+      "version": "0.4.45",
+      "kind": "unmaintained",
+      "disposition": "not_in_shipped_targets",
+      "reviewed": "2026-11-17",
+      "expires": "2026-12-31",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2026-0543.html",
+      "rationale": "Maintenance debt, not an all-clear. This locked package is absent from all three production/build target trees recorded by the audit. Any reachable target, version or new advisory fails this assessment; Linux releases require a fresh review."
     }
   ]
 }
