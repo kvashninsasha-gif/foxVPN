@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline real XHTTP/REALITY fixture; no user profile or remote VPS."""
-import argparse,sys,base64,http.server,json,os,queue,re,secrets,socket,ssl,subprocess,tempfile,threading,time
+import argparse,sys,hashlib,base64,http.server,json,os,queue,re,secrets,socket,ssl,subprocess,tempfile,threading,time
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--xray',type=Path,required=True);p.add_argument('--generator',type=Path,required=True);p.add_argument('--core',type=Path);p.add_argument('--report',type=Path,required=True);a=p.parse_args()
 UUID='11111111-1111-4111-8111-111111111111'
@@ -19,6 +19,7 @@ def reap(child):
  if child and child.poll() is None:child.kill()
  if child:child.wait(timeout=8)
 results=[]
+engine_versions=set()
 with tempfile.TemporaryDirectory(prefix='foxvpn-xhttp-') as temp:
  root=Path(temp);marker=secrets.token_hex(12)
  class HTTP(http.server.BaseHTTPRequestHandler):
@@ -37,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix='foxvpn-xhttp-') as temp:
    super().setup()
  class TLSFixtureServer(http.server.ThreadingHTTPServer):
   def handle_error(self,request,address):
-   if isinstance(sys.exc_info()[1],(ssl.SSLEOFError,TimeoutError)):return
+   if isinstance(sys.exc_info()[1],(ssl.SSLError,TimeoutError)):return
    super().handle_error(request,address)
  tls=TLSFixtureServer(('127.0.0.1',0),TLSHTTP);tls_port=tls.server_port
  threading.Thread(target=tls.serve_forever,daemon=True).start()
@@ -58,7 +59,7 @@ with tempfile.TemporaryDirectory(prefix='foxvpn-xhttp-') as temp:
     if security=='reality':uri+=f'&sni=fixture.invalid&pbk={public}&sid=abcd&fp=chrome'
     if a.core:
      client=subprocess.Popen([str(a.generator),'engine',uri,str(a.core)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
-     ready=queue.Queue();threading.Thread(target=lambda:ready.put(client.stdout.readline()),daemon=True).start();data=json.loads(ready.get(timeout=20));proxy_port=data['proxy_port'];auth=[]
+     ready=queue.Queue();threading.Thread(target=lambda:ready.put(client.stdout.readline()),daemon=True).start();data=json.loads(ready.get(timeout=20));engine_versions.add(data['engine_version']);proxy_port=data['proxy_port'];auth=[]
     else:
      proxy_port=port();cfg=json.loads(subprocess.check_output([str(a.generator),'config',uri,str(proxy_port)],timeout=8));cfg['log']['loglevel']='debug';
      if security=='reality':cfg['outbounds'][0]['streamSettings']['realitySettings']['show']=True
@@ -82,4 +83,5 @@ with tempfile.TemporaryDirectory(prefix='foxvpn-xhttp-') as temp:
     results.append({'security':security,'mode':mode,'passed':True});print(security,mode,'passed',flush=True)
    finally:reap(client);reap(server)
  finally:origin.shutdown();origin.server_close();tls.shutdown();tls.server_close()
-a.report.parent.mkdir(parents=True,exist_ok=True);a.report.write_text(json.dumps({'passed':True,'through_engine':bool(a.core),'cases':results},indent=2)+'\n')
+assert len(engine_versions)<=1
+a.report.parent.mkdir(parents=True,exist_ok=True);a.report.write_text(json.dumps({'passed':True,'through_engine':bool(a.core),'engine_version':next(iter(engine_versions)) if engine_versions else None,'xray_sha256':hashlib.sha256(a.xray.read_bytes()).hexdigest(),'core_sha256':hashlib.sha256(a.core.read_bytes()).hexdigest() if a.core else None,'cases':results},indent=2)+'\n')

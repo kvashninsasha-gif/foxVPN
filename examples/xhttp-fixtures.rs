@@ -30,7 +30,7 @@ fn main() {
         .expect("fixture start");
         println!(
             "{}",
-            serde_json::json!({"proxy_port":core.proxy_port,"transport_port":core.transport_proxy_port()})
+            serde_json::json!({"engine_version":env!("CARGO_PKG_VERSION"),"proxy_port":core.proxy_port,"transport_port":core.transport_proxy_port()})
         );
         std::io::stdout().flush().unwrap();
         for line in std::io::stdin().lock().lines() {

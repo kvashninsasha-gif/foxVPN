@@ -350,6 +350,10 @@ impl CoreProcess {
         };
         #[cfg(any(windows, feature = "test-support"))]
         let bridge = xhttp.as_ref().map(crate::xhttp::Sidecar::outbound);
+        #[cfg(any(windows, feature = "test-support"))]
+        while api_port == port || xhttp.as_ref().is_some_and(|v| v.port == api_port) {
+            api_port = free_port()?;
+        }
         #[cfg(not(any(windows, feature = "test-support")))]
         let bridge = None;
         let mut cfg = config_internal(s, settings, rules, port, api_port, &secret, bridge)?;

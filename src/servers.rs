@@ -216,3 +216,21 @@ pub fn import(text: &str, servers: &mut Vec<Server>) -> ImportReport {
     }
     report
 }
+
+#[cfg(test)]
+mod xhttp_tests {
+    use super::*;
+    #[test]
+    fn reality_xhttp_uri_roundtrip_preserves_transport_parameters() {
+        let raw="vless://11111111-1111-4111-8111-111111111111@example.com:443?type=xhttp&security=reality&sni=fixture.invalid&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&mode=stream-up&host=cdn.invalid&path=%2Ftransport%3Fid%3D1#fixture";
+        let server = Server::parse(raw).unwrap();
+        assert_eq!(server.transport, "xhttp");
+        assert_eq!(server.params["mode"], "stream-up");
+        assert_eq!(server.params["path"], "/transport?id=1");
+        let again = Server::parse(&server.uri().unwrap()).unwrap();
+        assert_eq!(again.params, server.params);
+        assert_eq!(again.security, "reality");
+        assert!(Server::parse(&raw.replace("mode=stream-up", "mode=unknown")).is_err());
+        assert!(Server::parse(&raw.replace("#fixture", "&flow=xtls-rprx-vision#fixture")).is_err());
+    }
+}
